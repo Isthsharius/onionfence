@@ -483,10 +483,14 @@ r=s.recv(512); print(struct.unpack('>H',r[6:8])[0])" $__torproxy_dnsport 2>&1)
     set -l out (torproxy newip | nocolor)
     t_eq "newip с настоящим Tor → код 0" 0 $pipestatus[1]
 
-    torproxy country de >/dev/null
+    set -l out (torproxy country de | nocolor)
+    t_lacks "country de применён сразу через ControlPort (без HUP)" "10 секунд" $out
     t_has "country de → Tor принял ExitNodes" "ExitNodes={de}" (__torproxy_control 'GETCONF ExitNodes')
     set -l out (torproxy status | nocolor)
-    t_has "status: выход действительно в Германии" " DE" (string match '*Внешний IP*' -- $out)
+    if not t_has "status: выход действительно в Германии" " DE" (string match '*Внешний IP*' -- $out)
+        echo "  --- диагностика: "(tor --version | head -1)
+        __torproxy_control 'GETCONF ExitNodes StrictNodes' 'GETINFO circuit-status' | string replace -r '^' '      '
+    end
     t_has "status: по-прежнему через Tor" "✔ да" $out
     torproxy country any >/dev/null
     t_lacks "country any → ExitNodes снят" "{de}" (__torproxy_control 'GETCONF ExitNodes')

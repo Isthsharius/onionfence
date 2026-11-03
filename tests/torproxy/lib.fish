@@ -35,6 +35,7 @@ function t_has --argument-names name needle
         __t_record PASS $name
     else
         __t_record FAIL $name "нет «$needle» в «$argv»"
+        return 1
     end
 end
 
