@@ -1,6 +1,12 @@
 # Прозрачная маршрутизация всего трафика через Tor (nftables).
-# Использование: torproxy [on | off | status | newip | country [код] | log | help]
+# Использование: torproxy [on | off | status | newip | country [код] | bridges [режим] | log | help]
 # Без аргументов — интерактивное меню.
+#
+# Copyright (C) 2026 Isthsharius
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Это свободная программа: её можно распространять и изменять на условиях
+# GNU General Public License версии 3 или (по вашему выбору) любой более поздней.
+# Распространяется БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ. Подробности — в файле LICENSE.
 
 set -g __torproxy_torrc /etc/tor/torrc
 set -g __torproxy_begin '# --- torproxy transparent ---'
