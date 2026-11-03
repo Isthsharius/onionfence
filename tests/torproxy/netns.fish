@@ -36,7 +36,8 @@ function probe --argument-names who kind host port
         case user
             set cmd setpriv --reuid=1000 --regid=1000 --clear-groups $cmd
         case tor
-            set cmd setpriv --reuid=43 --regid=43 --clear-groups $cmd
+            set -l uid (id -u $__torproxy_user)
+            set cmd setpriv --reuid=$uid --regid=$uid --clear-groups $cmd
     end
     set -l r ($cmd <$DIR/probe.py 2>&1)
     set -l n (nft list counter inet obs out | string match -rg 'packets (\d+)')
@@ -85,7 +86,7 @@ t_eq "TCP в локальную сеть — напрямую" LEFT (probe user 
 t_eq "UDP в локальную сеть — напрямую" LEFT (probe user udp 192.168.88.1 5000)
 t_eq "DHCP (68→67 broadcast) проходит" LEFT (probe root dhcp 255.255.255.255 67)
 
-section "Пользователь tor (uid 43): напрямую, без петли"
+section "Пользователь Tor ($__torproxy_user): напрямую, без петли"
 t_eq "TCP от tor не перенаправляется" LEFT (probe tor tcp 1.1.1.1 443)
 t_eq "DNS от tor не перенаправляется" LEFT (probe tor udp 1.1.1.1 53)
 

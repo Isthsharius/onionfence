@@ -2,6 +2,10 @@
 # Ожидает переменные окружения: T (рабочий каталог теста), SRC (путь к torproxy.fish).
 
 source $SRC
+# заглушки ниже рассчитаны на раскладку Arch; Debian/Ubuntu проверяются отдельно
+set -g __torproxy_platform arch
+set -g __torproxy_unit tor
+set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
 
 # sed, а не string: builtin string внутри функции не читает канал, если у fish нет терминала
 function nocolor
@@ -81,16 +85,16 @@ function systemctl
         set alive (command cat $T/tor.state 2>/dev/null; or echo 0)
     end
     switch "$argv"
-        case '-q is-active tor'
+        case "-q is-active $__torproxy_unit"
             test $alive = 1
-        case 'is-active tor'
+        case "is-active $__torproxy_unit"
             if test $alive = 1
                 echo active
             else
                 echo inactive
                 return 3
             end
-        case 'restart tor'
+        case "restart $__torproxy_unit"
             test "$MOCK_RESTART_FAIL" = 1; and return 1
             if test "$LIVE" = 1
                 __mock_tor_alive; and kill (command cat $T/tor.pid)
@@ -102,14 +106,14 @@ function systemctl
             else
                 echo 1 >$T/tor.state
             end
-        case 'stop tor'
+        case "stop $__torproxy_unit"
             if test "$LIVE" = 1
                 __mock_tor_alive; and kill (command cat $T/tor.pid)
                 rm -f $T/tor.pid
             else
                 echo 0 >$T/tor.state
             end
-        case 'reload tor'
+        case "reload $__torproxy_unit"
             test "$LIVE" = 1; and kill -HUP (command cat $T/tor.pid)
     end
 end

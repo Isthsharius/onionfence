@@ -35,7 +35,7 @@ t_eq "torproxy -h → код 0" 0 $status
 set -l out (torproxy blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "torproxy newip" $out
-t_eq "в справке все 8 команд" 8 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
+t_eq "в справке все 9 команд" 9 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -113,6 +113,87 @@ echo 1 >$T/tor.state
 set -l out (torproxy country se | nocolor)
 t_has "Tor включён, ControlPort недоступен → reload tor" "systemctl reload tor" (command cat $T/calls.log 2>/dev/null)
 t_has "… и честное предупреждение о задержке" "10 секунд" $out
+
+# ======================================================================
+section "Платформы: Arch и Debian/Ubuntu"
+reset_state
+mkdir -p $T/root-deb/usr/lib/systemd/system $T/root-deb-old/lib/systemd/system $T/root-arch/usr/lib/systemd/system
+touch $T/root-deb/usr/lib/systemd/system/tor@default.service $T/root-deb-old/lib/systemd/system/tor@default.service
+touch $T/root-arch/usr/lib/systemd/system/tor.service
+
+function detect_in --argument-names root
+    __torproxy_detect $root
+    echo "$__torproxy_platform $__torproxy_unit $__torproxy_cookie"
+end
+t_eq "Arch: служба tor, cookie в /var/lib/tor" "arch tor /var/lib/tor/control_auth_cookie" (detect_in $T/root-arch)
+t_eq "Debian/Ubuntu: служба tor@default, cookie в /run/tor" "debian tor@default /run/tor/control.authcookie" (detect_in $T/root-deb)
+t_eq "старый Debian (/lib без /usr): тоже tor@default" "debian tor@default /run/tor/control.authcookie" (detect_in $T/root-deb-old)
+# пустой список в "$root/..." раньше превращал проверку в `test -e` без пути → всегда «Debian»
+__torproxy_detect
+set -l expected arch
+test -e /usr/lib/systemd/system/tor@default.service -o -e /lib/systemd/system/tor@default.service; and set expected debian
+t_eq "без аргумента — определяется по этой системе ($expected)" $expected $__torproxy_platform
+
+function getent
+    test "$argv[1]" = passwd; and contains -- $argv[2] $MOCK_USERS
+end
+set -gx MOCK_USERS debian-tor
+__torproxy_detect $T/root-deb
+t_eq "пользователь Tor на Debian: debian-tor" debian-tor $__torproxy_user
+set -gx MOCK_USERS tor debian-tor
+__torproxy_detect $T/root-arch
+t_eq "пользователь Tor на Arch: tor" tor $__torproxy_user
+set -gx MOCK_USERS
+__torproxy_detect $T/root-arch
+t_eq "Tor не установлен: пользователя нет" "" "$__torproxy_user"
+set -l out (torproxy on 2>&1 | nocolor)
+t_eq "Tor не установлен → on, код 1" 1 $pipestatus[1]
+t_has "Tor не установлен → подсказка установки" "apt install tor" $out
+functions -e getent
+set -e MOCK_USERS
+__torproxy_detect
+set -g __torproxy_platform arch
+set -g __torproxy_unit tor
+
+# транспорты: на Debian/Ubuntu AppArmor пускает obfs4proxy и snowflake-client, а не lyrebird
+mkdir -p $T/pt
+for b in lyrebird obfs4proxy snowflake-client
+    printf '#!/bin/sh\n' >$T/pt/$b
+    chmod +x $T/pt/$b
+end
+set -l saved_path $PATH
+set -gx PATH $T/pt $PATH
+# только заглушки из $T/pt, без системных программ (lyrebird может быть установлен)
+function pt
+    set -lx PATH $T/pt
+    __torproxy_pt_binary $argv[1] | path basename
+end
+set -g __torproxy_platform arch
+t_eq "Arch: obfs4 / snowflake / webtunnel → lyrebird" "lyrebird lyrebird lyrebird" (pt obfs4)" "(pt snowflake)" "(pt webtunnel)
+set -g __torproxy_platform debian
+t_eq "Debian: obfs4 → obfs4proxy, snowflake → snowflake-client" "obfs4proxy snowflake-client" (pt obfs4)" "(pt snowflake)
+rm $T/pt/lyrebird
+t_eq "obfs4proxy не умеет webtunnel" "" "$(pt webtunnel)"
+t_has "Debian: подсказка для snowflake — apt" "apt install snowflake-client" (__torproxy_pt_hint snowflake)
+t_has "Debian: webtunnel — честно, что пакета нет" "пакета для webtunnel нет" (__torproxy_pt_hint webtunnel)
+set -g __torproxy_platform arch
+t_has "Arch: подсказка — lyrebird из AUR" "paru -S lyrebird-proxy" (__torproxy_pt_hint obfs4)
+
+# весь цикл on/off на Debian идёт через tor@default
+reset_state
+set -g __torproxy_platform debian
+set -g __torproxy_unit tor@default
+printf '%s\n' $orig >$__torproxy_torrc
+torproxy on >/dev/null 2>&1
+t_eq "Debian: on → код 0" 0 $status
+t_has "Debian: перезапуск tor@default" "systemctl restart tor@default" (command cat $T/calls.log 2>/dev/null)
+t_has "Debian: журнал tor@default" "journalctl -u tor@default" (command cat $T/calls.log 2>/dev/null)
+torproxy off >/dev/null 2>&1
+t_has "Debian: off останавливает tor@default" "systemctl stop tor@default" (command cat $T/calls.log 2>/dev/null)
+t_has "version показывает платформу" "debian: служба tor@default" (torproxy version)
+t_has "version показывает номер версии" "torproxy 0.1.0" (torproxy version)
+set -g __torproxy_platform arch
+set -g __torproxy_unit tor
 
 # ======================================================================
 section "Мосты"
@@ -282,7 +363,7 @@ t_eq "on → код 0" 0 $pipestatus[1]
 t_has "прогресс доходит до 100%" "100%" $out
 t_has "правила: DNS на DNSPort 9053" "udp dport 53 redirect to :9053" (command cat $T/ruleset.nft 2>/dev/null)
 t_has "правила: TCP на TransPort 9040" "meta l4proto tcp redirect to :9040" (command cat $T/ruleset.nft 2>/dev/null)
-t_has "правила: uid Tor = "(id -u tor) "skuid "(id -u tor)" accept" (command cat $T/ruleset.nft 2>/dev/null)
+t_has "правила: uid Tor = "(id -u $__torproxy_user) "skuid "(id -u $__torproxy_user)" accept" (command cat $T/ruleset.nft 2>/dev/null)
 t_lacks "правила: нет 5353" "5353" (command cat $T/ruleset.nft 2>/dev/null)
 t_lacks "правила: нет established" "established" (grep -v "#" $T/ruleset.nft)
 t_has "кэш DNS сброшен" "resolvectl flush-caches" (command cat $T/calls.log 2>/dev/null)
@@ -348,7 +429,7 @@ set -l out (env TERM=dumb fish -c '
     __torproxy_bar 47; echo
     __torproxy_status --quick
     MOCK_FAIL=journalctl torproxy on' 2>&1)
-t_eq "справка: все 8 команд видны" 8 (string match -r '^\s+torproxy' -- $out | count)
+t_eq "справка: все 9 команд видны" 9 (string match -r '^\s+torproxy' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out

@@ -1,0 +1,58 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ubuntu:
+    name: Ubuntu 24.04 — тесты и настоящий запуск
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Зависимости
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fish tor nftables jq socat curl uidmap
+          # тестам межсетевого экрана нужны непривилегированные namespace
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid /etc/subgid
+          fish --version; tor --version | head -1
+
+      - name: Тесты (заглушки, файрвол в namespace, живой Tor)
+        run: fish tests/torproxy/run.fish
+
+      - name: Настоящий запуск (sudo, systemd, nftables)
+        run: fish tests/torproxy/e2e-system.fish
+
+  debian:
+    name: Debian 13 — тесты и конфиг Tor
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Зависимости
+        run: |
+          apt-get update
+          apt-get install -y fish tor jq socat curl python3 ca-certificates
+          fish --version; tor --version | head -1
+
+      - name: Платформа определяется как Debian
+        run: fish -c 'source functions/torproxy.fish; torproxy version' | tee /dev/stderr | grep -q 'служба tor@default, пользователь debian-tor'
+
+      - name: Tor принимает torrc с блоком torproxy и настройками Debian
+        run: |
+          cp /etc/tor/torrc /tmp/torrc
+          fish -c 'source functions/torproxy.fish
+                   function sudo; $argv; end
+                   set -g __torproxy_torrc /tmp/torrc
+                   __torproxy_torrc --country de'
+          tor --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f /tmp/torrc --verify-config
+
+      - name: Тесты (заглушки и живой Tor; namespace в контейнере пропускаются)
+        run: fish tests/torproxy/run.fish

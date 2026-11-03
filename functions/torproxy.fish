@@ -16,7 +16,30 @@ set -g __torproxy_timeout 90
 set -g __torproxy_transport 9040
 set -g __torproxy_dnsport 9053 # не 5353: его занимает mDNS systemd-resolved
 set -g __torproxy_ctlport 9051
-set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
+set -g __torproxy_version 0.1.0
+
+# Различия дистрибутивов. Debian/Ubuntu: настоящая служба — tor@default
+# (tor.service там пустышка ExecStart=/bin/true), пользователь debian-tor,
+# cookie в /run/tor. Аргумент root — префикс путей, нужен только тестам.
+function __torproxy_detect --argument-names root
+    if test -e "$root/usr/lib/systemd/system/tor@default.service"; or test -e "$root/lib/systemd/system/tor@default.service"
+        set -g __torproxy_platform debian
+        set -g __torproxy_unit tor@default
+        set -g __torproxy_cookie /run/tor/control.authcookie
+    else
+        set -g __torproxy_platform arch
+        set -g __torproxy_unit tor
+        set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
+    end
+    set -g __torproxy_user
+    for u in tor debian-tor _tor
+        if getent passwd $u >/dev/null
+            set -g __torproxy_user $u
+            break
+        end
+    end
+end
+__torproxy_detect
 
 # Встроенные мосты Tor Browser
 # (tor-browser-build: projects/tor-expert-bundle/pt_config.json, ноябрь 2026)
@@ -49,7 +72,9 @@ function torproxy --description 'Весь трафик через Tor: меню 
         case bridges
             __torproxy_bridges $argv[2..]
         case log
-            sudo journalctl -fu tor
+            sudo journalctl -fu $__torproxy_unit
+        case version --version
+            echo "torproxy $__torproxy_version ($__torproxy_platform: служба $__torproxy_unit, пользователь $__torproxy_user)"
         case help -h --help
             __torproxy_help
         case '*'
@@ -103,6 +128,7 @@ function __torproxy_help
     echo "  $(set_color --bold)torproxy country de$(set_color normal)      страна выхода (de, nl, us…); 'any' — любая"
     echo "  $(set_color --bold)torproxy bridges$(set_color normal)         мосты: snowflake | obfs4 | add | off"
     echo "  $(set_color --bold)torproxy log$(set_color normal)             журнал Tor в реальном времени"
+    echo "  $(set_color --bold)torproxy version$(set_color normal)         версия и платформа (Arch / Debian, Ubuntu)"
 end
 
 # ---------- torrc ----------
@@ -126,7 +152,7 @@ function __torproxy_torrc
         for tr in (string match -rg '^([a-z0-9_]+) ' -- $bridges | sort -u)
             set -l bin (__torproxy_pt_binary $tr)
             if test -z "$bin"
-                __torproxy_say red "✘ Для мостов $tr нужна программа lyrebird: paru -S lyrebird-proxy"
+                __torproxy_say red "✘ Для мостов $tr нет программы-транспорта: "(__torproxy_pt_hint $tr)
                 return 1
             end
             set -a bridge_lines "ClientTransportPlugin $tr exec $bin"
@@ -191,21 +217,42 @@ function __torproxy_bridges_summary
     end | string join ', '
 end
 
-# Путь к программе-транспорту; lyrebird умеет obfs4, webtunnel, meek_lite и snowflake
+# Путь к программе-транспорту. lyrebird умеет obfs4, webtunnel, meek_lite и snowflake;
+# obfs4proxy — только obfs4 и meek_lite. На Debian/Ubuntu AppArmor разрешает Tor
+# запускать obfs4proxy и snowflake-client, но не lyrebird, поэтому они там первые.
 function __torproxy_pt_binary --argument-names transport
     set -l candidates
     switch $transport
-        case obfs4 webtunnel meek_lite
+        case obfs4 meek_lite
             set candidates lyrebird obfs4proxy
+        case webtunnel
+            set candidates lyrebird webtunnel-client
         case snowflake
             set candidates lyrebird snowflake-client
         case conjure
             set candidates conjure-client
     end
+    test "$__torproxy_platform" = debian; and set candidates $candidates[-1..1]
     for c in $candidates
         command -s $c; and return
     end
     return 1
+end
+
+# Как установить транспорт для мостов этого типа
+function __torproxy_pt_hint --argument-names transport
+    if test "$__torproxy_platform" = debian
+        switch $transport
+            case obfs4 meek_lite
+                echo "sudo apt install obfs4proxy"
+            case snowflake
+                echo "sudo apt install snowflake-client"
+            case '*'
+                echo "в стабильных Debian/Ubuntu пакета для $transport нет, используйте obfs4 или snowflake"
+        end
+    else
+        echo "paru -S lyrebird-proxy"
+    end
 end
 
 # Строка моста: [транспорт] IP:порт [параметры]; префикс «Bridge » допускается
@@ -220,6 +267,10 @@ end
 
 function __torproxy_on
     __torproxy_banner
+    if test -z "$__torproxy_user"
+        __torproxy_say red "✘ Tor не установлен (нет пользователя tor/debian-tor): sudo pacman -S tor или sudo apt install tor"
+        return 1
+    end
     __torproxy_torrc; or return 1
 
     # через мосты (особенно snowflake) Tor подключается заметно дольше
@@ -228,14 +279,14 @@ function __torproxy_on
     set -q bridges[1]; and set timeout (math $timeout x 2)
 
     set -l started (date '+%Y-%m-%d %H:%M:%S')
-    sudo systemctl restart tor; or begin
+    sudo systemctl restart $__torproxy_unit; or begin
         __torproxy_on_failed "Tor не запустился"
         return 1
     end
     echo "  Подключение к сети Tor..."
     set -l pct 0
     for i in (seq $timeout)
-        set -l p (sudo journalctl -u tor --since "$started" --no-pager -q | string match -rg 'Bootstrapped (\d+)%' | tail -1)
+        set -l p (sudo journalctl -u $__torproxy_unit --since "$started" --no-pager -q | string match -rg 'Bootstrapped (\d+)%' | tail -1)
         # string match без совпадений (Tor ещё не начал) — не ошибка, поэтому проверяем только journalctl
         if test $pipestatus[1] -ne 0
             __torproxy_on_failed "Не удалось прочитать журнал Tor"
@@ -253,7 +304,7 @@ function __torproxy_on
     end
 
     # Весь TCP -> TransPort, DNS -> DNSPort, остальное блокируется
-    set -l tor_uid (id -u tor)
+    set -l tor_uid (id -u $__torproxy_user)
     set -l lan '{ 127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 }'
     sudo nft delete table inet $__torproxy_table 2>/dev/null
     echo "
@@ -289,7 +340,7 @@ end
 # Tor не поднялся. Если режим уже был включён, правила остаются: интернет закрыт, но без утечек.
 function __torproxy_on_failed --argument-names reason
     echo
-    sudo systemctl stop tor
+    sudo systemctl stop $__torproxy_unit
     if sudo nft list table inet $__torproxy_table >/dev/null 2>&1
         __torproxy_say red "✘ $reason. Tor-режим остаётся включённым, поэтому интернет закрыт (torproxy off — вернуть обычный)"
     else
@@ -299,7 +350,7 @@ end
 
 function __torproxy_off
     sudo nft delete table inet $__torproxy_table 2>/dev/null
-    sudo systemctl stop tor
+    sudo systemctl stop $__torproxy_unit
     resolvectl flush-caches 2>/dev/null
     __torproxy_say yellow "● Tor-режим ВЫКЛЮЧЕН, обычный интернет восстановлен."
 end
@@ -318,7 +369,7 @@ function __torproxy_status
 
     echo "$(set_color magenta)"'  ╭──────────── статус ─────────────'"$(set_color normal)"
     __torproxy_row "Режим" $rules
-    __torproxy_row "Служба Tor" (systemctl is-active tor)
+    __torproxy_row "Служба Tor" (systemctl is-active $__torproxy_unit)
     __torproxy_row "Страна выхода" (__torproxy_exit_country)
     __torproxy_row "Мосты" (__torproxy_bridges_summary)
 
@@ -331,7 +382,7 @@ function __torproxy_status
         else
             # страну спрашиваем у GeoIP самого Tor: ipinfo.io отвечает выходам Tor 403
             set -l geo
-            if systemctl -q is-active tor
+            if systemctl -q is-active $__torproxy_unit
                 set geo (__torproxy_control "GETINFO ip-to-country/$ip" 2>/dev/null | string match -rg '^250-ip-to-country/.*=(\w+)$' | string upper)
             end
             test -n "$geo"; or set geo (curl -s --max-time 15 https://ipinfo.io/$ip/json | jq -r '[.country, .city] | map(select(. != null)) | join(", ")' 2>/dev/null)
@@ -363,7 +414,7 @@ function __torproxy_control
 end
 
 function __torproxy_newip
-    if not systemctl -q is-active tor
+    if not systemctl -q is-active $__torproxy_unit
         __torproxy_say red "✘ Tor не запущен (torproxy on)"
         return 1
     end
@@ -395,9 +446,9 @@ function __torproxy_country --argument-names cc
     __torproxy_torrc --country $cc; or return 1
     __torproxy_say green "✔ Страна выхода: "(__torproxy_exit_country)
 
-    if systemctl -q is-active tor; and not __torproxy_apply_country $cc
+    if systemctl -q is-active $__torproxy_unit; and not __torproxy_apply_country $cc
         # без ControlPort: перечитать torrc; старые цепочки доживут до NEWNYM (до 10 секунд)
-        sudo systemctl reload tor
+        sudo systemctl reload $__torproxy_unit
         __torproxy_say yellow "  Tor применит это к новым соединениям в течение ~10 секунд"
     end
 end
@@ -470,7 +521,7 @@ function __torproxy_bridges --argument-names mode
     __torproxy_say green "✔ Мосты: "(__torproxy_bridges_summary)
 
     # смена мостов требует перезапуска Tor; если режим включён — переподключаемся
-    if systemctl -q is-active tor
+    if systemctl -q is-active $__torproxy_unit
         __torproxy_on
     end
 end
@@ -539,7 +590,7 @@ function __torproxy_menu
                 test -n "$m"; and __torproxy_bridges $m
             case '*Журнал*'
                 # pager вместо -f: Ctrl+C в fish прервал бы всё меню
-                sudo journalctl -u tor -n 300 -e
+                sudo journalctl -u $__torproxy_unit -n 300 -e
                 continue
             case '*'
                 return
