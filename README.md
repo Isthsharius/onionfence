@@ -1,5 +1,7 @@
 # torproxy
 
+[![tests](https://github.com/Isthsharius/torproxy/actions/workflows/tests.yml/badge.svg)](https://github.com/Isthsharius/torproxy/actions/workflows/tests.yml)
+
 Весь трафик компьютера на Linux через Tor одной командой. Функция для оболочки [fish](https://fishshell.com/): правила nftables перенаправляют TCP и DNS в Tor, а всё, что не может идти через Tor (UDP, ICMP, IPv6), блокируется, чтобы ничего не ушло мимо.
 
 ```fish
@@ -10,30 +12,44 @@ torproxy off      # выключить, обычный интернет
 
 > **Это не анонимность.** torproxy прячет ваш IP-адрес, но браузер по-прежнему выдаёт отпечаток, куки и вход в аккаунты. Для анонимного сёрфинга используйте [Tor Browser](https://www.torproject.org/download/).
 
-## Требования
+## Поддерживаемые системы
 
-Проверено на CachyOS (Arch Linux). На других дистрибутивах может не заработать без правок: например, в Debian и Ubuntu пользователь Tor называется `debian-tor`, а не `tor`.
+| Система | Как проверено |
+|---|---|
+| Arch Linux, CachyOS | вручную автором и тестами |
+| Ubuntu 24.04 | автоматически при каждом изменении: тесты и настоящий запуск с sudo, systemd и nftables |
+| Debian 13 | автоматически: тесты и проверка конфигурации Tor |
 
-| Нужно | Зачем |
+Различия дистрибутивов torproxy определяет сам: в Debian и Ubuntu служба называется `tor@default`, а пользователь — `debian-tor`. Команда `torproxy version` показывает, что определилось.
+
+## Установка
+
+**Arch Linux, CachyOS — из AUR:**
+
+```fish
+paru -S torproxy               # или yay -S torproxy
+paru -S fzf lyrebird-proxy     # по желанию: меню и мосты
+```
+
+**Debian, Ubuntu:**
+
+```fish
+sudo apt install fish tor nftables curl jq socat fzf
+sudo apt install obfs4proxy snowflake-client     # по желанию: мосты
+git clone https://github.com/Isthsharius/torproxy.git
+mkdir -p ~/.config/fish/functions
+cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
+```
+
+Откройте новый терминал, и команда `torproxy` станет доступна. Пароль sudo понадобится при каждом включении и выключении.
+
+| Пакет | Зачем |
 |---|---|
 | `fish`, `tor`, `nftables`, `sudo`, systemd | основа |
 | `curl`, `jq` | проверка IP в `status` |
 | `socat` | `newip` и смена страны через ControlPort |
 | `fzf` | меню со стрелками (без него будет нумерованный список) |
-| `lyrebird` (AUR: `lyrebird-proxy`) | только для мостов |
-
-```fish
-sudo pacman -S tor nftables curl jq socat fzf
-```
-
-## Установка
-
-```fish
-git clone https://github.com/Isthsharius/torproxy.git
-cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
-```
-
-Откройте новый терминал, и команда `torproxy` станет доступна. Пароль sudo понадобится при каждом включении и выключении.
+| `lyrebird-proxy` (Arch) или `obfs4proxy` + `snowflake-client` (Debian/Ubuntu) | только для мостов |
 
 ## Команды
 
@@ -46,9 +62,10 @@ cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
 | `torproxy country de` | выход через выбранную страну, `any` — любая |
 | `torproxy bridges snowflake` | мосты для сетей, где Tor заблокирован; также `obfs4`, `add` (свои), `off` |
 | `torproxy log` | журнал Tor в реальном времени |
+| `torproxy version` | версия и определившаяся платформа |
 | `torproxy help` | справка |
 
-**Свои мосты** обычно работают лучше встроенных. Получить их можно у бота [@GetBridgesBot](https://t.me/GetBridgesBot) в Telegram или на [bridges.torproject.org](https://bridges.torproject.org/), затем добавить командой `torproxy bridges add`.
+**Свои мосты** обычно работают лучше встроенных. Получить их можно у бота [@GetBridgesBot](https://t.me/GetBridgesBot) в Telegram или на [bridges.torproject.org](https://bridges.torproject.org/), затем добавить командой `torproxy bridges add`. В Debian и Ubuntu поддерживаются мосты obfs4 и snowflake, а webtunnel нет: для него в стабильных версиях нет пакета.
 
 ## Как это работает
 
@@ -66,6 +83,7 @@ cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
 - В Tor-режиме не работают UDP-сервисы: игры, звонки, QUIC, VPN, синхронизация времени (NTP).
 - Трафик Docker и виртуальных машин не перехватывается, только трафик самого компьютера.
 - После перезагрузки режим выключен, его нужно включить заново.
+- Встроенные мосты Snowflake в живом тесте автора пока не подключились (Tor остановился на 0%). Причина выясняется. Встроенные obfs4 тоже не проверены вживую; свои мосты от @GetBridgesBot обычно работают лучше встроенных.
 
 ## Тесты
 
