@@ -19,7 +19,9 @@ function t_has --argument-names name needle
     string match -q -- "*$needle*" "$argv"; and __t_record PASS $name; or __t_record FAIL $name "нет «$needle» в «$argv»"
 end
 function istor
-    curl -s --max-time 60 https://check.torproject.org/api/ip | jq -r '.IsTor // "нет ответа"'
+    set -l r (curl -s --max-time 60 https://check.torproject.org/api/ip | jq -r '.IsTor' 2>/dev/null)
+    # не «.IsTor // …»: jq считает false пустым и подставил бы запасное значение
+    test -n "$r"; and echo $r; or echo "нет ответа"
 end
 
 echo "== "(torproxy version)
