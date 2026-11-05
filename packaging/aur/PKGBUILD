@@ -1,6 +1,6 @@
 # Maintainer: Isthsharius <217949973+Isthsharius@users.noreply.github.com>
 pkgname=torproxy
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Route all system traffic through Tor with one fish command (nftables, bridges, TUI menu)'
 arch=('any')
@@ -10,18 +10,26 @@ depends=('fish' 'tor' 'nftables' 'sudo' 'systemd' 'curl' 'jq' 'socat')
 optdepends=(
   'fzf: interactive menu with arrow keys'
   'lyrebird-proxy: Tor bridges (obfs4, webtunnel, snowflake)'
+  'torbrowser-launcher: torproxy browser'
+  'mat2: torproxy clean'
+  'networkmanager: torproxy hide'
+  'less: scrolling in torproxy guide'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('225775cc9242e9f1ec5e6757602d6364d3a1b5b36ffc5d5e5b94f94549bae510')
+sha256sums=('2316a420d965ec8fc0d5a691e3cbc16bd23bef2d2fe268ad61c1c876baacf703')
 
 check() {
   cd "$pkgname-$pkgver"
   fish --no-config -n functions/torproxy.fish
+  fish --no-config -n bin/torproxy
+  fish --no-config -n completions/torproxy.fish
   fish --no-config -c "source functions/torproxy.fish; torproxy version" | grep -q "torproxy $pkgver"
 }
 
 package() {
   cd "$pkgname-$pkgver"
   install -Dm644 functions/torproxy.fish "$pkgdir/usr/share/fish/vendor_functions.d/torproxy.fish"
+  install -Dm644 completions/torproxy.fish "$pkgdir/usr/share/fish/vendor_completions.d/torproxy.fish"
+  install -Dm755 bin/torproxy "$pkgdir/usr/bin/torproxy"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
 }

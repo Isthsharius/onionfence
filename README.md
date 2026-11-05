@@ -72,6 +72,7 @@ sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по же�
 | `torproxy` | интерактивное меню |
 | `torproxy on` / `off` | включить / выключить; `on --strict` — без доступа к локальной сети, `off -y` — без вопроса |
 | `torproxy leaktest` | проверка утечек: IP, DNS, UDP, IPv6, ICMP |
+| `torproxy doctor` | найти неполадку: программы, настройки, порты, часы |
 | `torproxy browser` | Tor Browser через системный Tor |
 | `torproxy boot on` / `off` | защита с момента загрузки системы; `boot on --strict` — в строгом режиме |
 | `torproxy hide on` / `off` | случайный MAC и скрытие имени компьютера в локальной сети |
@@ -121,7 +122,8 @@ sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по же�
    - весь TCP перенаправляется в TransPort, DNS — в DNSPort;
    - трафик самого Tor и локальной сети (192.168.x, 10.x, 172.16–31.x) идёт напрямую, DHCP работает;
    - остальное (UDP, ICMP, IPv6) блокируется.
-4. `torproxy off` удаляет эту таблицу и останавливает Tor. Другие правила файрвола (например, ufw) не затрагиваются.
+4. Служба `torproxy-guard` каждые 3 секунды проверяет таблицу и возвращает её, если её стёрли (например, перезапуск `nftables.service`).
+5. `torproxy off` останавливает сторожа, удаляет эту таблицу и останавливает Tor. Другие правила файрвола (например, ufw) не затрагиваются.
 
 ## Ограничения
 

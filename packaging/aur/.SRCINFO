@@ -1,6 +1,6 @@
 pkgbase = torproxy
 	pkgdesc = Route all system traffic through Tor with one fish command (nftables, bridges, TUI menu)
-	pkgver = 0.1.0
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/Isthsharius/torproxy
 	arch = any
@@ -15,7 +15,11 @@ pkgbase = torproxy
 	depends = socat
 	optdepends = fzf: interactive menu with arrow keys
 	optdepends = lyrebird-proxy: Tor bridges (obfs4, webtunnel, snowflake)
-	source = torproxy-0.1.0.tar.gz::https://github.com/Isthsharius/torproxy/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = 225775cc9242e9f1ec5e6757602d6364d3a1b5b36ffc5d5e5b94f94549bae510
+	optdepends = torbrowser-launcher: torproxy browser
+	optdepends = mat2: torproxy clean
+	optdepends = networkmanager: torproxy hide
+	optdepends = less: scrolling in torproxy guide
+	source = torproxy-0.2.0.tar.gz::https://github.com/Isthsharius/torproxy/archive/refs/tags/v0.2.0.tar.gz
+	sha256sums = 2316a420d965ec8fc0d5a691e3cbc16bd23bef2d2fe268ad61c1c876baacf703
 
 pkgname = torproxy

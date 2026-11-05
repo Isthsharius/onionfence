@@ -1,7 +1,7 @@
 # Автодополнение для torproxy
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-set -l commands on off status leaktest circuit watch browser boot hide clean newip country exclude bridges log version help guide
+set -l commands on off status leaktest doctor circuit watch browser boot hide clean newip country exclude bridges log version help guide
 set -l countries de nl ch se fi no is at fr us ca gb ro
 
 complete -c torproxy -f
@@ -9,6 +9,7 @@ complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a on -d 'В
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a off -d 'Выключить: обычный интернет'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a status -d 'Статус, внешний IP и страна'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a leaktest -d 'Проверка утечек'
+complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a doctor -d 'Найти неполадку'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a circuit -d 'Схема цепочки'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a watch -d 'Живая панель'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a browser -d 'Tor Browser через системный Tor'

@@ -35,7 +35,7 @@ t_eq "torproxy -h → код 0" 0 $status
 set -l out (torproxy blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "torproxy newip" $out
-t_eq "в справке все 18 команд" 18 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
+t_eq "в справке все 19 команд" 19 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -705,7 +705,7 @@ set -l out (env TERM=dumb fish -c '
     __torproxy_bar 47; echo
     __torproxy_status --quick
     MOCK_FAIL=journalctl torproxy on' 2>&1)
-t_eq "справка: все 18 команд видны" 18 (string match -r '^\s+torproxy' -- $out | count)
+t_eq "справка: все 19 команд видны" 19 (string match -r '^\s+torproxy' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out
@@ -862,7 +862,7 @@ t_has "дополнение: bridges auto --no-direct" "--no-direct" (compl 'tor
 t_has "дополнение: on --strict" "--strict" (compl 'torproxy on --')
 t_has "дополнение: страны" "de" (compl 'torproxy country d')
 # справка и дополнение не должны расходиться с диспетчером
-for c in on off status leaktest circuit watch browser boot hide clean newip country exclude bridges log version help guide
+for c in on off status leaktest doctor circuit watch browser boot hide clean newip country exclude bridges log version help guide
     t_has "дополнение знает команду $c" $c (compl "torproxy $c")
 end
 
@@ -1115,6 +1115,164 @@ functions -e __saved_sudo
 set -gx MOCK_BOOT 5
 set -l out (__torproxy_wait_bootstrap 3 now | string collect | string split \r | string match '*%')
 t_eq "вне терминала одинаковые проценты выводятся один раз" 1 (count $out)
+reset_state
+
+# ======================================================================
+section "Причины сбоя"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+t_has "часы" "часы" (__torproxy_explain 'Our clock is 3 hours behind' 'Bootstrapped 5%')
+t_has "занятый порт" "порт" (__torproxy_explain 'Could not bind to 127.0.0.1:9040: Address already in use')
+t_has "ошибка настроек" "настройках" (__torproxy_explain 'Failed to parse/validate config: Unknown option')
+t_has "права" "прав" (__torproxy_explain 'Could not open: Permission denied')
+t_has "транспорт" "транспорт" (__torproxy_explain 'Could not launch managed proxy executable at /x')
+t_has "нет сети" "нет подключения" (__torproxy_explain 'Bootstrapped 0%' 'Network is unreachable')
+t_has "застрял без мостов → автоподбор" "bridges auto" (__torproxy_explain 'Bootstrapped 5%')
+t_eq "пустой журнал → причин не выдумываем" 0 (count (__torproxy_explain))
+
+set -gx MOCK_BOOT 5
+set -l out (torproxy on 2>&1 | nocolor)
+t_eq "Tor не подключился → код 1" 1 $pipestatus[1]
+t_has "… и причина названа" "Вероятная причина" $out
+reset_state
+
+function timedatectl
+    echo no
+end
+set -l out (torproxy on 2>&1 | nocolor)
+t_has "часы не синхронизированы → предупреждение" "Часы не синхронизированы" $out
+function timedatectl
+    echo yes
+end
+t_lacks "часы в порядке → без предупреждения" "Часы не" (torproxy on 2>&1 | nocolor)
+functions -e timedatectl
+
+# ======================================================================
+section "Сторож правил"
+reset_state
+rm -f $T/guard.active
+__torproxy_guard_unit_text >$T/run-sd/check.service
+t_has "сторож читает сначала текущие правила" "[ -r $__torproxy_run/rules.nft ]" (command cat $T/run-sd/check.service)
+t_has "… затем правила загрузки" "f=$__torproxy_etc/rules.nft" (command cat $T/run-sd/check.service)
+t_has "сторож стартует после службы загрузки" "After=local-fs.target torproxy-boot.service" (command cat $T/run-sd/check.service)
+if command -q systemd-analyze; and command -q nft
+    systemd-analyze verify $T/run-sd/check.service >$T/verify-guard.out 2>&1
+    t_eq "systemd-analyze принимает сторожа" 0 $status
+end
+rm -f $T/run-sd/check.service
+
+torproxy on --strict >/dev/null
+t_eq "on запускает сторожа" 1 (test -e $T/guard.active; and echo 1; or echo 0)
+t_has "сторож знает строгие правила" "torproxy-strict" (command cat $__torproxy_run/rules.nft 2>/dev/null)
+t_eq "служба сторожа записана" 1 (test -e $T/run-sd/torproxy-guard.service; and echo 1; or echo 0)
+set -l calls (command cat $T/calls.log)
+set -l stop_at (contains -i -- "systemctl stop torproxy-guard" $calls)
+set -l del_at (contains -i -- "nft delete table inet torproxy" $calls)
+t_eq "on останавливает сторожа раньше, чем удаляет таблицу" 1 (test -n "$stop_at" -a -n "$del_at"; and test $stop_at -lt $del_at; and echo 1; or echo "$stop_at $del_at")
+rm -f $T/calls.log
+torproxy off -y >/dev/null
+t_eq "off останавливает сторожа" 0 (test -e $T/guard.active; and echo 1; or echo 0)
+t_eq "off убирает правила сторожа" 0 (test -e $__torproxy_run/rules.nft; and echo 1; or echo 0)
+t_eq "off убирает службу" 0 (test -e $T/run-sd/torproxy-guard.service; and echo 1; or echo 0)
+set -l calls (command cat $T/calls.log)
+set -l stop_at (contains -i -- "systemctl stop torproxy-guard" $calls)
+set -l del_at (contains -i -- "nft delete table inet torproxy" $calls)
+t_eq "off останавливает сторожа раньше, чем удаляет таблицу" 1 (test -n "$stop_at" -a -n "$del_at"; and test $stop_at -lt $del_at; and echo 1; or echo "$stop_at $del_at")
+set -gx MOCK_GUARD_FAIL 1
+set -l out (torproxy on 2>&1 | nocolor)
+t_eq "сторож не запустился → режим всё равно включён" 0 $pipestatus[1]
+t_has "… и об этом сказано" "Не удалось запустить сторожа" $out
+set -e MOCK_GUARD_FAIL
+torproxy off -y >/dev/null
+
+set -g __torproxy_etc $T/etc
+set -g __torproxy_systemd_dir $T/sd
+rm -f $T/calls.log
+torproxy boot on >/dev/null
+t_eq "boot on ставит сторожа" 1 (test -e $T/sd/torproxy-guard.service; and echo 1; or echo 0)
+t_has "boot on включает сторожа" "torproxy-guard" (string match '*systemctl enable*' -- (command cat $T/calls.log))
+torproxy boot off >/dev/null
+t_eq "boot off убирает сторожа" 0 (test -e $T/sd/torproxy-guard.service; and echo 1; or echo 0)
+set -g __torproxy_etc /etc/torproxy
+set -g __torproxy_systemd_dir /etc/systemd/system
+
+# ======================================================================
+section "Диагностика"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+function tor
+    if contains -- --verify-config $argv
+        test "$MOCK_VERIFY_FAIL" = 1; and echo '[warn] Failed to parse/validate config: Unknown option Foo'; and return 1
+        return 0
+    end
+    echo 'Tor version 0.4.9.14.'
+end
+# порты считаем свободными, пока тест не скажет иначе
+function __torproxy_port_used
+    test "$MOCK_PORTS" = 1
+end
+echo 0 >$T/tor.state
+set -l out (torproxy doctor 2>&1 | nocolor)
+t_eq "всё выключено и исправно → код 0" 0 $pipestatus[1]
+t_has "doctor: порты свободны" "порт 9040 свободен" $out
+t_has "doctor: режим выключен" "выключен" $out
+
+set -gx MOCK_VERIFY_FAIL 1
+set -l out (torproxy doctor 2>&1 | nocolor)
+t_eq "Tor отвергает настройки → код 1" 1 $pipestatus[1]
+t_has "… причина показана" "Unknown option Foo" $out
+set -e MOCK_VERIFY_FAIL
+
+set -gx MOCK_PORTS 1
+set -l out (torproxy doctor 2>&1 | nocolor)
+t_eq "Tor выключен, порт занят → код 1" 1 $pipestatus[1]
+t_has "… сказано, как найти программу" "занят другой программой" $out
+set -e MOCK_PORTS
+
+# настоящая проверка порта: занимаем его сами
+if command -q ss; and command -q python3
+    functions -e __torproxy_port_used
+    source $SRC # вернуть настоящую функцию; настройки ниже восстанавливаем
+    source $DIR/lib.fish
+    set -l freeport (python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+    t_eq "настоящий ss: свободный порт" 1 (__torproxy_port_used tcp $freeport; echo $status)
+    python3 -I -c 'import socket,sys,time;s=socket.socket();s.bind(("127.0.0.1",int(sys.argv[1])));s.listen();time.sleep(3)' $freeport &
+    set -l listener $last_pid
+    disown
+    sleep 0.7
+    t_eq "настоящий ss: занятый порт" 0 (__torproxy_port_used tcp $freeport; echo $status)
+    kill $listener 2>/dev/null
+    function __torproxy_port_used
+        test "$MOCK_PORTS" = 1
+    end
+end
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+
+echo 1 >$T/tor.state
+set -gx MOCK_PORTS 1
+functions -c __torproxy_control __doc_control
+function __torproxy_control
+    echo '250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done'
+end
+set -l out (torproxy doctor 2>&1 | nocolor)
+t_has "Tor работает: подключение подтверждено" "Tor подключён к сети" $out
+t_has "Tor работает без правил → предупреждение" "трафик идёт напрямую" $out
+functions -e __torproxy_control
+functions -c __doc_control __torproxy_control
+functions -e __doc_control
+set -e MOCK_PORTS
+
+set -gx MOCK_RULES 1
+function nft
+    return 0
+end
+echo 0 >$T/tor.state
+set -l out (torproxy doctor 2>&1 | nocolor)
+t_eq "правила есть, Tor не запущен → код 1" 1 $pipestatus[1]
+t_has "… объяснено, почему нет интернета" "закрыт" $out
+functions -e nft tor __torproxy_port_used
+source $DIR/lib.fish
 reset_state
 
 # ======================================================================

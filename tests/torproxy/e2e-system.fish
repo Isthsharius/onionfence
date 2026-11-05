@@ -87,6 +87,19 @@ t_has "watch на настоящей системе: один кадр" "Цеп�
 t_has "guide открывается" "Быстрый старт" (torproxy guide)
 t_has "команда для других оболочек" "Страна выхода" (bash -c "'$DIR/../../bin/torproxy' status")
 
+torproxy doctor
+t_eq "doctor на настоящей системе → код 0" 0 $status
+
+# Сторож: стираем таблицу как чужая программа и ждём, пока он её вернёт
+t_eq "сторож запущен" active (systemctl is-active torproxy-guard)
+sudo nft flush ruleset
+for i in (seq 15)
+    sudo nft list table inet torproxy >/dev/null 2>&1; and break
+    sleep 1
+end
+t_eq "сторож вернул стёртые правила" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "… и трафик снова идёт через Tor" true (istor)
+
 torproxy on --strict >/dev/null
 t_eq "on --strict → код 0" 0 $status
 t_eq "строгий режим: трафик через Tor" true (istor)
@@ -99,6 +112,9 @@ t_eq "… трафик через Tor" true (istor)
 
 torproxy off
 t_eq "off: таблица удалена" 0 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "off: сторож остановлен" inactive (systemctl is-active torproxy-guard)
+sleep 5
+t_eq "off: сторож не вернул таблицу" 0 (sudo nft list tables | grep -c 'inet torproxy')
 t_eq "off: снова напрямую" false (istor)
 
 # Защита при загрузке: перезагрузить машину CI нельзя, поэтому запускаем службу вручную

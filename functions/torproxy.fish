@@ -22,7 +22,11 @@ set -g __torproxy_boot_unit torproxy-boot
 set -g __torproxy_etc /etc/torproxy
 set -g __torproxy_systemd_dir /etc/systemd/system
 set -g __torproxy_leak_wait 6
+set -g __torproxy_guard_interval 3
 set -g __torproxy_auto_timeout 60 # bridges auto: сколько ждать один способ
+set -g __torproxy_guard_unit torproxy-guard
+set -g __torproxy_run /run/torproxy
+set -g __torproxy_run_systemd /run/systemd/system
 
 # Различия дистрибутивов. Debian/Ubuntu: настоящая служба — tor@default
 # (tor.service там пустышка ExecStart=/bin/true), пользователь debian-tor,
@@ -77,6 +81,8 @@ function torproxy --description 'Весь трафик через Tor: меню 
             __torproxy_hide $argv[2..]
         case leaktest
             __torproxy_leaktest
+        case doctor
+            __torproxy_doctor
         case circuit
             __torproxy_circuit
         case watch
@@ -175,6 +181,7 @@ function __torproxy_help
     echo "  $(set_color --bold)torproxy off$(set_color normal)             выключить: обычный интернет (-y: без вопроса)"
     echo "  $(set_color --bold)torproxy status$(set_color normal)          статус, внешний IP и страна"
     echo "  $(set_color --bold)torproxy leaktest$(set_color normal)        проверка утечек: IP, DNS, UDP, IPv6, ICMP"
+    echo "  $(set_color --bold)torproxy doctor$(set_color normal)          найти неполадку: зависимости, настройки, порты, часы"
     echo "  $(set_color --bold)torproxy circuit$(set_color normal)         схема цепочки: через какие страны идёт трафик"
     echo "  $(set_color --bold)torproxy watch$(set_color normal)           живая панель: IP, скорость, цепочка"
     echo "  $(set_color --bold)torproxy browser$(set_color normal)         Tor Browser через системный Tor"
@@ -426,6 +433,7 @@ function __torproxy_on
         return 1
     end
     __torproxy_torrc; or return 1
+    __torproxy_clock_warn
 
     # через мосты (особенно snowflake) Tor подключается заметно дольше
     set -l timeout $__torproxy_timeout
@@ -434,7 +442,7 @@ function __torproxy_on
 
     set -l started (date '+%Y-%m-%d %H:%M:%S')
     sudo systemctl restart $__torproxy_unit; or begin
-        __torproxy_on_failed "Tor не запустился"
+        __torproxy_on_failed "Tor не запустился" $started
         return 1
     end
     echo "  Подключение к сети Tor..."
@@ -445,15 +453,18 @@ function __torproxy_on
         __torproxy_on_failed "Не удалось прочитать журнал Tor"
         return 1
     else if test $wait_rc -ne 0
-        __torproxy_on_failed "Tor не подключился за $timeout секунд"
+        __torproxy_on_failed "Tor не подключился за $timeout секунд" $started
         return 1
     end
 
+    # сторож не должен вернуть старую таблицу между удалением и созданием новой
+    __torproxy_guard_stop
     sudo nft delete table inet $__torproxy_table 2>/dev/null
     __torproxy_rules $mode | sudo nft -f -; or begin
         __torproxy_say red "✘ Ошибка применения правил nftables"
         return 1
     end
+    __torproxy_guard_start $mode
     resolvectl flush-caches 2>/dev/null
 
     __torproxy_say green "✔ Tor-режим ВКЛЮЧЁН. Перезапусти браузер и программы, открытые до включения."
@@ -461,14 +472,97 @@ function __torproxy_on
 end
 
 # Tor не поднялся. Если режим уже был включён, правила остаются: интернет закрыт, но без утечек.
-function __torproxy_on_failed --argument-names reason
+function __torproxy_on_failed --argument-names reason started
     echo
+    # журнал читаем до остановки: так в выборку не попадут сообщения о завершении
+    set -l why
+    if test -n "$started"
+        set why (__torproxy_explain (sudo journalctl -u $__torproxy_unit --since "$started" --no-pager -q 2>/dev/null))
+    end
     sudo systemctl stop $__torproxy_unit
     if sudo nft list table inet $__torproxy_table >/dev/null 2>&1
         __torproxy_say red "✘ $reason. Tor-режим остаётся включённым, поэтому интернет закрыт (torproxy off — вернуть обычный)"
     else
         __torproxy_say red "✘ $reason, правила НЕ применены (torproxy log)"
     end
+    test -n "$why"; and __torproxy_say yellow "  Вероятная причина: $why"
+end
+
+# Переводит сообщения Tor в понятную причину. Порядок важен: сначала то, что не даёт Tor стартовать.
+function __torproxy_explain
+    if string match -qir 'Reading config failed|Failed to parse/validate config' -- $argv
+        echo "ошибка в настройках Tor, подробности покажет torproxy doctor"
+    else if string match -qir 'Could not bind|Address already in use' -- $argv
+        echo "порт Tor занят другой программой, какой именно, покажет torproxy doctor"
+    else if string match -qir 'Permission denied|apparmor' -- $argv
+        echo "Tor не хватило прав (часто это AppArmor или права на каталог данных)"
+    else if string match -qir 'Could not launch managed proxy|Managed proxy .*(?:fail|exit|terminat)|Pluggable Transport process terminated' -- $argv
+        echo "не запустилась программа-транспорт для мостов"
+    else if string match -qir 'clock|skew|not yet valid' -- $argv
+        echo "неверные часы компьютера: исправь время и включи снова"
+    else if string match -qir 'Network is unreachable|No route to host' -- $argv
+        echo "нет подключения к сети"
+    else if string match -qir 'Bootstrapped|Problem bootstrapping' -- $argv
+        if test -n "$(__torproxy_bridges_current)"
+            echo "мосты не отвечают: попробуй torproxy bridges auto или свои мосты от @GetBridgesBot"
+        else
+            echo "Tor, похоже, заблокирован в этой сети: попробуй torproxy bridges auto"
+        end
+    end
+end
+
+# Предупреждает, если система считает часы несинхронизированными: при большой ошибке Tor не подключится,
+# а в Tor-режиме синхронизация по NTP заблокирована.
+function __torproxy_clock_warn
+    command -q timedatectl; or return 0
+    if test "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = no
+        __torproxy_say yellow "  ⚠ Часы не синхронизированы. Если Tor не подключится, сначала проверь время: timedatectl"
+    end
+end
+
+# ---------- сторож правил ----------
+
+# Сторож возвращает таблицу, если её стёрли (например, nftables.service делает flush ruleset):
+# без него трафик молча пошёл бы напрямую, а пользователь считал бы, что он в Tor.
+function __torproxy_guard_unit_text
+    set -l nft (command -s nft; or echo /usr/bin/nft)
+    set -l runtime $__torproxy_run/rules.nft
+    set -l persistent $__torproxy_etc/rules.nft
+    printf '%s\n' \
+        '[Unit]' \
+        'Description=torproxy: restore firewall rules if they are flushed' \
+        'DefaultDependencies=no' \
+        "After=local-fs.target $__torproxy_boot_unit.service" \
+        'Before=shutdown.target' \
+        'Conflicts=shutdown.target' \
+        '' \
+        '[Service]' \
+        "ExecStart=/bin/sh -c 'while sleep $__torproxy_guard_interval; do $nft list table inet $__torproxy_table >/dev/null 2>&1 && continue; if [ -r $runtime ]; then f=$runtime; else f=$persistent; fi; $nft -f \$\$f && echo restored rules from \$\$f; done'" \
+        'Restart=on-failure' \
+        '' \
+        '[Install]' \
+        'WantedBy=sysinit.target'
+end
+
+# Запоминает действующие правила и запускает сторожа. Сбой не критичен: режим уже включён.
+function __torproxy_guard_start --argument-names mode
+    set -l ok 1
+    sudo mkdir -p $__torproxy_run; or set ok 0
+    __torproxy_rules $mode | sudo tee $__torproxy_run/rules.nft >/dev/null
+    __torproxy_pipefail $pipestatus; or set ok 0
+    __torproxy_guard_unit_text | sudo tee $__torproxy_run_systemd/$__torproxy_guard_unit.service >/dev/null
+    __torproxy_pipefail $pipestatus; or set ok 0
+    sudo systemctl daemon-reload; or set ok 0
+    sudo systemctl start $__torproxy_guard_unit; or set ok 0
+    if test $ok = 0
+        __torproxy_say yellow "  ⚠ Не удалось запустить сторожа: если правила кто-то сотрёт, они не вернутся сами"
+    end
+end
+
+function __torproxy_guard_stop
+    sudo systemctl stop $__torproxy_guard_unit 2>/dev/null
+    sudo rm -f $__torproxy_run/rules.nft $__torproxy_run_systemd/$__torproxy_guard_unit.service
+    true
 end
 
 # Имена программ с соединениями наружу (свои процессы: чужие ss без root не называет).
@@ -500,6 +594,8 @@ function __torproxy_off
             end
         end
     end
+    __torproxy_guard_stop
+    sudo systemctl daemon-reload
     sudo nft delete table inet $__torproxy_table 2>/dev/null
     sudo systemctl stop $__torproxy_unit
     resolvectl flush-caches 2>/dev/null
@@ -589,6 +685,7 @@ function __torproxy_boot --argument-names action
                 return 1
             end
             __torproxy_torrc; or return 1
+            __torproxy_clock_warn
             sudo mkdir -p $__torproxy_etc; or return 1
             __torproxy_rules $mode | sudo tee $__torproxy_etc/rules.nft >/dev/null
             __torproxy_pipefail $pipestatus; or begin
@@ -610,8 +707,13 @@ function __torproxy_boot --argument-names action
                 __torproxy_say red "✘ Не удалось записать $service"
                 return 1
             end
+            __torproxy_guard_unit_text | sudo tee $__torproxy_systemd_dir/$__torproxy_guard_unit.service >/dev/null
+            __torproxy_pipefail $pipestatus; or begin
+                __torproxy_say red "✘ Не удалось записать службу сторожа"
+                return 1
+            end
             sudo systemctl daemon-reload
-            sudo systemctl enable $__torproxy_boot_unit $__torproxy_unit; or begin
+            sudo systemctl enable $__torproxy_boot_unit $__torproxy_unit $__torproxy_guard_unit; or begin
                 __torproxy_say red "✘ Не удалось включить службы"
                 return 1
             end
@@ -623,7 +725,8 @@ function __torproxy_boot --argument-names action
                 __torproxy_say yellow "Защита при загрузке и так выключена"
                 return 0
             end
-            sudo systemctl disable $__torproxy_boot_unit 2>/dev/null
+            sudo systemctl disable $__torproxy_boot_unit $__torproxy_guard_unit 2>/dev/null
+            sudo rm -f $__torproxy_systemd_dir/$__torproxy_guard_unit.service
             sudo test -e $__torproxy_etc/tor-was-enabled; or sudo systemctl disable $__torproxy_unit
             sudo rm -f $service
             sudo rm -rf $__torproxy_etc
@@ -947,6 +1050,152 @@ function __torproxy_country --argument-names cc
     end
 end
 
+# ---------- диагностика ----------
+
+# Строка отчёта doctor: уровень ok | warn | fail; провалы считаются в __torproxy_doc_fails
+function __torproxy_doc_row --argument-names level name detail
+    switch $level
+        case ok
+            __torproxy_row $name "$(set_color green)✔$(set_color normal) $detail"
+        case warn
+            __torproxy_row $name "$(set_color yellow)⚠$(set_color normal) $detail"
+        case fail
+            __torproxy_row $name "$(set_color red)✘$(set_color normal) $detail"
+            set -g __torproxy_doc_fails (math $__torproxy_doc_fails + 1)
+    end
+end
+
+# Занят ли порт: протокол tcp | udp
+function __torproxy_port_used --argument-names proto port
+    set -l flag -t
+    test $proto = udp; and set flag -u
+    test -n "$(ss -Hln $flag "sport = :$port" 2>/dev/null)"
+end
+
+function __torproxy_doctor
+    set -g __torproxy_doc_fails 0
+    set -l pm "sudo pacman -S"
+    test "$__torproxy_platform" = debian; and set pm "sudo apt install"
+    echo "$(set_color magenta)"'  ╭──────── диагностика ─────────────'"$(set_color normal)"
+
+    # программы
+    for tool in tor nft curl jq socat ss systemctl
+        if command -q $tool
+            set -l detail установлен
+            test $tool = tor; and set detail (command tor --version 2>/dev/null | string match -rg 'version ([0-9.]+)')
+            __torproxy_doc_row ok $tool "$detail"
+        else
+            __torproxy_doc_row fail $tool "нет: $pm $tool"
+        end
+    end
+    if not command -q fzf
+        __torproxy_doc_row warn fzf "нет: меню будет с номерами вместо стрелок"
+    end
+    set -l tor_ready 1
+    command -q tor; or set tor_ready 0
+    if test -z "$__torproxy_user"
+        __torproxy_doc_row fail "Пользователь" "нет пользователя tor или debian-tor"
+    end
+
+    # транспорты для настроенных мостов
+    set -l bridges (__torproxy_bridges_current)
+    if set -q bridges[1]
+        for tr in (string match -rg '^([a-z0-9_]+) ' -- $bridges | sort -u)
+            if test -n "$(__torproxy_pt_binary $tr)"
+                __torproxy_doc_row ok "Мосты $tr" "транспорт на месте"
+            else
+                __torproxy_doc_row fail "Мосты $tr" (__torproxy_pt_hint $tr)
+            end
+        end
+    end
+
+    # настройки: Tor сам проверяет итоговый файл
+    if test $tor_ready = 1
+        set -l defaults
+        test -r /usr/share/tor/tor-service-defaults-torrc; and set defaults --defaults-torrc /usr/share/tor/tor-service-defaults-torrc
+        set -l verify (sudo tor $defaults --verify-config -f $__torproxy_torrc 2>&1)
+        if test $status -eq 0
+            __torproxy_doc_row ok "Настройки" "Tor принимает $__torproxy_torrc"
+        else
+            set -l first (string match -ri '.*\[(?:warn|err)\].*' -- $verify)[1]
+            __torproxy_doc_row fail "Настройки" "Tor отвергает $__torproxy_torrc: $first"
+        end
+    end
+
+    # служба и порты
+    set -l active 0
+    systemctl -q is-active $__torproxy_unit; and set active 1
+    set -l rules 0
+    sudo nft list table inet $__torproxy_table >/dev/null 2>&1; and set rules 1
+    for entry in "tcp $__torproxy_transport TransPort" "udp $__torproxy_dnsport DNSPort" "tcp $__torproxy_ctlport ControlPort"
+        set -l e (string split ' ' -- $entry)
+        set -l used 0
+        __torproxy_port_used $e[1] $e[2]; and set used 1
+        if test $active = 1 -a $used = 0
+            __torproxy_doc_row fail $e[3] "порт $e[2] не слушается: Tor ещё запускается или настройки не применились"
+        else if test $active = 0 -a $used = 1
+            __torproxy_doc_row fail $e[3] "порт $e[2] занят другой программой: sudo ss -lntup | grep $e[2]"
+        else if test $active = 1
+            __torproxy_doc_row ok $e[3] "порт $e[2] слушается"
+        else
+            __torproxy_doc_row ok $e[3] "порт $e[2] свободен"
+        end
+    end
+
+    # согласованность
+    if test $rules = 1 -a $active = 0
+        __torproxy_doc_row fail "Интернет" "закрыт: правила есть, а Tor не запущен. torproxy on или torproxy off"
+    else if test $rules = 1
+        __torproxy_doc_row ok "Режим" "включён"
+        if systemctl -q is-active $__torproxy_guard_unit
+            __torproxy_doc_row ok "Сторож" "вернёт правила, если их сотрут"
+        else
+            __torproxy_doc_row warn "Сторож" "не запущен: стёртые правила не вернутся сами (torproxy on запустит его)"
+        end
+    else if test $active = 1
+        __torproxy_doc_row warn "Режим" "Tor работает, но трафик идёт напрямую (torproxy on)"
+    else
+        __torproxy_doc_row ok "Режим" "выключен"
+    end
+    if test $active = 1
+        if set -l reply (__torproxy_control 'GETINFO status/bootstrap-phase' 2>/dev/null); and string match -q '*PROGRESS=100*' -- "$reply"
+            __torproxy_doc_row ok "Подключение" "Tor подключён к сети"
+        else if string match -q '*BOOTSTRAP*' -- "$reply"
+            __torproxy_doc_row warn "Подключение" "Tor ещё подключается"
+        else
+            __torproxy_doc_row fail "ControlPort" "Tor не отвечает или отверг cookie"
+        end
+    end
+
+    # часы
+    if command -q timedatectl
+        switch "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+            case yes
+                __torproxy_doc_row ok "Часы" "синхронизированы"
+            case no
+                if test $rules = 1
+                    __torproxy_doc_row warn "Часы" "не синхронизируются: в Tor-режиме NTP закрыт. Это норма, пока время не разойдётся сильно"
+                else
+                    __torproxy_doc_row warn "Часы" "не синхронизированы: при большой ошибке Tor не подключится"
+                end
+        end
+    end
+
+    # если Tor не работает, журнал обычно уже называет причину
+    if test $active = 0
+        set -l why (__torproxy_explain (sudo journalctl -u $__torproxy_unit -n 100 --no-pager -q 2>/dev/null))
+        test -n "$why"; and __torproxy_doc_row warn "Прошлый запуск" $why
+    end
+
+    echo "$(set_color magenta)"'  ╰──────────────────────────────────'"$(set_color normal)"
+    if test $__torproxy_doc_fails -eq 0
+        __torproxy_say green "✔ Неполадок не найдено"
+    else
+        __torproxy_say red "✘ Неполадок: $__torproxy_doc_fails"
+        return 1
+    end
+end
+
 # ---------- руководство ----------
 
 # Текст руководства: строка «# Заголовок» станет заголовком, остальное выводится как есть
@@ -991,6 +1240,7 @@ torproxy направляет весь TCP-трафик и DNS компьюте�
   watch               живая панель: IP, скорость, цепочки и путь
                       клавиши: q — выход, n — новый IP
   leaktest            проверка утечек: IP, DNS, UDP, IPv6, ICMP
+  doctor              найти неполадку: программы, настройки, порты, часы
 
 Разные сайты идут по разным цепочкам, поэтому circuit показывает последнюю
 открытую. Если соединений нет, будет показана готовая цепочка без сайта.
@@ -1053,7 +1303,15 @@ hide требует NetworkManager и переподключает сеть, а 
 В Tor-режиме не работают UDP-сервисы: игры, звонки, QUIC, VPN и синхронизация
 времени. Трафик Docker и виртуальных машин не перехватывается.
 
+# Сторож правил
+
+Пока режим включён, служба torproxy-guard каждые 3 секунды проверяет таблицу
+файрвола и возвращает её, если её стёрли: например, перезапуск nftables.service
+очищает все правила. Запрет снимается только командой torproxy off.
+
 # Если что-то не работает
+
+Начни с torproxy doctor: он проверит программы, настройки, порты и часы.
 
   Нет интернета
       torproxy off вернёт обычный интернет. Так бывает, если Tor упал или при
@@ -1692,6 +1950,7 @@ function __torproxy_menu
             '🔴  Выключить Tor-режим' \
             '🔍  Проверить IP и страну' \
             '🛡️  Проверка утечек' \
+            '🩺  Найти неполадку' \
             '🗺️  Схема цепочки' \
             '📊  Живая панель' \
             '🌐  Запустить Tor Browser' \
@@ -1717,6 +1976,8 @@ function __torproxy_menu
                 __torproxy_status
             case '*утечек*'
                 __torproxy_leaktest
+            case '*неполадку*'
+                __torproxy_doctor
             case '*Схема*'
                 __torproxy_circuit
             case '*панель*'

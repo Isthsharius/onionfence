@@ -7,6 +7,10 @@ set -gx XDG_STATE_HOME $T/state # тесты не должны видеть на
 set -g __torproxy_platform arch
 set -g __torproxy_unit tor
 set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
+# сторож в тестах не должен трогать настоящие /run и systemd
+mkdir -p $T/run-sd
+set -g __torproxy_run $T/run
+set -g __torproxy_run_systemd $T/run-sd
 
 # sed, а не string: builtin string внутри функции не читает канал, если у fish нет терминала
 function nocolor
@@ -133,6 +137,12 @@ function systemctl
             test -e $T/boot.enabled
         case "-q is-enabled $__torproxy_unit"
             test "$MOCK_TOR_ENABLED" = 1
+        case "-q is-active $__torproxy_guard_unit"
+            test -e $T/guard.active
+        case "start $__torproxy_guard_unit"
+            test "$MOCK_GUARD_FAIL" != 1; and touch $T/guard.active
+        case "stop $__torproxy_guard_unit"
+            rm -f $T/guard.active
         case 'enable *'
             test "$MOCK_ENABLE_FAIL" != 1
         case "reload $__torproxy_unit"
