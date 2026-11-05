@@ -150,7 +150,8 @@ t_eq "run: сокет systemd-resolved спрятан" 0 $status
 onionfence run --force sh -c 'getent hosts check.torproject.org' >/dev/null
 t_eq "run: имена разрешаются через Tor" 0 $status
 onionfence run --force sh -c 'ping -c1 -W2 1.1.1.1' >/dev/null 2>&1
-t_eq "run: ICMP отброшен" 1 $status
+# код зависит от системы: 1 — нет ответа, 2 — ping не смог отправить; важно, что ответа нет
+t_eq "run: ICMP отброшен" 1 (test $status -ne 0; and echo 1; or echo 0)
 onionfence run --force python3 -c "
 import socket
 try:

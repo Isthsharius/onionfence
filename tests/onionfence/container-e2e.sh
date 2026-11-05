@@ -7,7 +7,7 @@ image=$1
 
 case "$image" in
     archlinux* | manjarolinux*)
-        install='pacman-key --init && pacman-key --populate && pacman -Syu --noconfirm --needed fish tor nftables curl jq socat iproute2 iputils procps-ng util-linux sudo systemd python less'
+        install='pacman-key --init && pacman-key --populate && pacman -Syu --noconfirm --needed fish tor nftables curl jq socat iproute2 iputils procps-ng util-linux sudo systemd python less diffutils'
         ;;
     debian* | ubuntu*)
         install='apt-get update && apt-get install -y fish tor nftables curl jq socat iproute2 iputils-ping procps util-linux sudo systemd systemd-sysv python3 ca-certificates less dbus'
@@ -22,6 +22,9 @@ docker build -t onionfence-system - <<DOCKERFILE
 FROM $image
 RUN $install
 RUN useradd -m tester && echo 'tester ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/tester
+# Проверки файрвола во вложенном пространстве пользователя в контейнере не работают: ядро не даёт доступ
+# к nftables. Без subuid тесты их пропускают, эти проверки идут на виртуальной машине Ubuntu.
+RUN sed -i '/^tester:/d' /etc/subuid /etc/subgid
 CMD ["/usr/lib/systemd/systemd"]
 DOCKERFILE
 
@@ -36,5 +39,8 @@ docker exec onionfence-system sh -c 'cat /etc/os-release | head -2; fish --versi
 as_tester() {
     docker exec -u tester -w /home/tester -e HOME=/home/tester -e TERM=xterm-256color onionfence-system "$@"
 }
-as_tester fish /repo/tests/onionfence/run.fish
-as_tester fish /repo/tests/onionfence/e2e-system.fish
+# оба этапа идут до конца: падение первого не должно скрывать результат второго
+rc=0
+as_tester fish /repo/tests/onionfence/run.fish || rc=1
+as_tester fish /repo/tests/onionfence/e2e-system.fish || rc=1
+exit $rc
