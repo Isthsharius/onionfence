@@ -35,7 +35,7 @@ t_eq "onionfence -h → код 0" 0 $status
 set -l out (onionfence blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "onionfence newip" $out
-t_eq "в справке все 24 команд" 24 (onionfence help | nocolor | string match -r '^\s+onionfence' | count)
+t_eq "в справке все 25 команд" 25 (onionfence help | nocolor | string match -r '^\s+onionfence' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -712,7 +712,7 @@ set -l out (env TERM=dumb fish -c '
     __onionfence_bar 47; echo
     __onionfence_status --quick
     MOCK_FAIL=journalctl onionfence on' 2>&1)
-t_eq "справка: все 24 команд видны" 24 (string match -r '^\s+onionfence' -- $out | count)
+t_eq "справка: все 25 команд видны" 25 (string match -r '^\s+onionfence' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out
@@ -869,7 +869,7 @@ t_has "дополнение: bridges auto --no-direct" "--no-direct" (compl 'oni
 t_has "дополнение: on --strict" "--strict" (compl 'onionfence on --')
 t_has "дополнение: страны" "de" (compl 'onionfence country d')
 # справка и дополнение не должны расходиться с диспетчером
-for c in on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall panic
+for c in on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall panic timesync
     t_has "дополнение знает команду $c" $c (compl "onionfence $c")
 end
 
@@ -1852,6 +1852,101 @@ t_has "leaktest завершает socat по таймеру" 'timeout $__onionf
 t_lacks "leaktest не ждёт через socat -t" 'socat -t$__onionfence_leak_wait' "$leak_src"
 t_has "правила отбрасывают пустой пакет" "udp dport 9053 udp length 8 drop" (__onionfence_rules)
 t_has "и в строгом режиме" "udp dport 9053 udp length 8 drop" (__onionfence_rules strict)
+
+# ======================================================================
+section "Сторож: восстановление связи и часы"
+reset_state
+# Настоящий sh и настоящая логика сторожа, подменены только внешние программы.
+# Цикл заканчивается, когда заглушка sleep исчерпает число проходов.
+function guard_run --argument-names passes circuit route remote_time
+    set -l dir $T/guard-bin
+    mkdir -p $dir
+    rm -f $T/guard.log
+    set -l stub '#!/bin/sh\necho "$(basename "$0") $*" >>'$T'/guard.log\n'
+    printf "$stub"'exit 0\n' >$dir/nft
+    printf "$stub"'exit 0\n' >$dir/systemctl
+    printf '#!/bin/sh\necho x >>'$T'/guard.ticks\n[ "$(wc -l <'$T'/guard.ticks)" -le '$passes' ]\n' >$dir/sleep
+    printf "#!/bin/sh\nprintf '250-status/circuit-established=$circuit\\\\r\\\\n'\n" >$dir/socat
+    printf "#!/bin/sh\n[ -n '$route' ] && echo 'default via 1.1.1.1'\nexit 0\n" >$dir/ip
+    printf "#!/bin/sh\nprintf 'HTTP/2 200\\\\r\\\\ndate: $remote_time\\\\r\\\\n'\n" >$dir/curl
+    printf "$stub"'if [ "$1" = -s ]; then exit 0; fi\nexec /usr/bin/env -i /usr/bin/date "$@"\n' >$dir/date
+    chmod +x $dir/*
+    rm -f $T/guard.ticks
+    set -l unit (__onionfence_guard_unit_text | string match 'ExecStart=*' | string replace "ExecStart=/bin/sh -c '" '' | string replace -r "'\$" '')
+    # как systemd: $$ → $, %% → %; \r и \n разворачивает сам sh через printf
+    set -l script (string replace -a '$$' '$' -- $unit | string replace -a '%%' '%')
+    env PATH=$dir:(string join : $PATH) sh -c "$script" >$T/guard.out 2>&1
+end
+
+guard_run 70 0 yes ''
+t_has "нет цепочек 3 минуты → Tor перезапущен" "systemctl restart tor" (command cat $T/guard.log)
+t_has "… и об этом есть запись в журнале" "restarting tor" (command cat $T/guard.out)
+guard_run 40 0 yes ''
+t_lacks "нет цепочек меньше 3 минут → Tor не трогаем" "systemctl restart" (command cat $T/guard.log)
+guard_run 70 1 yes ''
+t_lacks "цепочки есть → Tor не трогаем" "systemctl restart" (command cat $T/guard.log)
+guard_run 70 0 '' ''
+t_lacks "нет сети → перезапуск бесполезен" "systemctl restart" (command cat $T/guard.log)
+
+# дата на английском, как в настоящем заголовке HTTP, в любой локали
+set -l future (LC_ALL=C date -u -d '+1 hour' '+%a, %d %b %Y %H:%M:%S GMT')
+guard_run 30 1 yes $future
+t_has "часы расходятся → исправлены" "date -s @" (command cat $T/guard.log)
+t_has "… в журнале есть запись" "clock corrected" (command cat $T/guard.out)
+set -l now_date (LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S GMT')
+guard_run 30 1 yes $now_date
+t_lacks "часы верны → не трогаем" "date -s" (command cat $T/guard.log)
+guard_run 30 1 yes 'not a date'
+t_lacks "сайт вернул мусор → часы не трогаем" "date -s" (command cat $T/guard.log)
+guard_run 30 0 yes $future
+t_lacks "Tor не подключён → часы не трогаем" "date -s" (command cat $T/guard.log)
+functions -e guard_run
+
+# Ручная сверка
+set -g SITE_TIMES
+functions -c curl __saved_curl
+functions -c sudo __saved_sudo
+function curl
+    set -l t $SITE_TIMES[1]
+    set -e SITE_TIMES[1]
+    test -n "$t"; and test "$t" != none; and printf 'HTTP/2 200\r\ndate: %s\r\n' (LC_ALL=C date -u -d "@$t" '+%a, %d %b %Y %H:%M:%S GMT')
+end
+function sudo
+    if test "$argv[1]" = date
+        echo "$argv" >>$T/date.log
+        return 0
+    end
+    __saved_sudo $argv
+end
+echo 0 >$T/tor.state
+onionfence timesync >/dev/null
+t_eq "timesync: Tor выключен → код 1" 1 $status
+echo 1 >$T/tor.state
+set -l now (date +%s)
+rm -f $T/date.log
+set -g SITE_TIMES (math $now + 3600) (math $now + 3601) (math $now + 3599)
+set -l out (onionfence timesync | nocolor)
+t_eq "timesync: часы отстают → код 0" 0 $pipestatus[1]
+t_has "timesync: берёт среднее из трёх" "date -s @"(math $now + 3600) (command cat $T/date.log)
+rm -f $T/date.log
+set -g SITE_TIMES $now $now $now
+t_has "timesync: часы верны" "Часы верны" (onionfence timesync | nocolor)
+t_eq "… и не меняет их" 0 (test -e $T/date.log; and echo 1; or echo 0)
+set -g SITE_TIMES none none (math $now + 3600)
+set -l out (onionfence timesync | nocolor)
+t_eq "timesync: ответил один сайт → код 1" 1 $pipestatus[1]
+t_eq "… время не изменено" 0 (test -e $T/date.log; and echo 1; or echo 0)
+set -g SITE_TIMES $now (math $now + 90000) (math $now + 3600)
+set -l out (onionfence timesync | nocolor)
+t_eq "timesync: сайты сильно расходятся → код 1" 1 $pipestatus[1]
+t_has "… объяснено" "расходятся" $out
+functions -e curl sudo
+functions -c __saved_curl curl
+functions -c __saved_sudo sudo
+functions -e __saved_curl __saved_sudo
+set -e SITE_TIMES
+echo 0 >$T/tor.state
+reset_state
 
 # ======================================================================
 section "Меню"

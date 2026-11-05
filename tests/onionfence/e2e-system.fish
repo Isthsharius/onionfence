@@ -259,6 +259,39 @@ t_eq "--fresh: через Tor" true "$fresh_tor"
 rm -f $HOME/.e2e-real-file
 sudo systemctl stop $__onionfence_unit
 
+# Сторож перезапускает Tor, если цепочек нет: настоящая блокировка Tor на файрволе, циклы ускорены
+set -g __onionfence_guard_interval 1
+onionfence on >/dev/null
+t_eq "сторож запущен для проверки связи" active (systemctl is-active onionfence-guard)
+set -l since (date '+%Y-%m-%d %H:%M:%S')
+printf '%s\n' "table inet e2eblock { chain out { type filter hook output priority -10; policy accept; meta skuid $__onionfence_user drop; }; }" | sudo nft -f -
+sudo systemctl restart $__onionfence_unit
+set -g healed 0
+for i in (seq 150)
+    if sudo journalctl -u onionfence-guard --since "$since" --no-pager -q | string match -q '*restarting tor*'
+        set healed 1
+        break
+    end
+    sleep 1
+end
+t_eq "нет цепочек: сторож перезапустил Tor" 1 $healed
+sudo nft delete table inet e2eblock
+for i in (seq 120)
+    curl -s --max-time 10 -o /dev/null https://check.torproject.org/api/ip; and break
+    sleep 1
+end
+t_eq "сеть вернулась: Tor снова работает" true (istor)
+
+# Сторож и ручная сверка исправляют часы: настоящее расхождение на час
+sudo systemctl stop systemd-timesyncd 2>/dev/null
+sudo date -s '+1 hour' >/dev/null
+onionfence timesync >$T/timesync.txt
+t_eq "timesync → код 0" 0 $status
+t_has "timesync исправил часы" "исправлены" (command cat $T/timesync.txt)
+t_eq "после сверки расхождения нет" 1 (set -l d (math "abs("(curl -sI --max-time 40 https://www.torproject.org/ | string match -ri '^date: .*' | string replace -ri '^date:\s*' '' | string trim | date -f - +%s)" - "(date +%s)")"); test $d -le 30; and echo 1; or echo "$d")
+onionfence off -y >/dev/null
+set -g __onionfence_guard_interval 3
+
 # Смена цепочки по таймеру
 onionfence on >/dev/null
 onionfence newip --every 30s >/dev/null

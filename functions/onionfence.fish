@@ -29,6 +29,11 @@ set -g __onionfence_old_etc /etc/torproxy
 set -g __onionfence_old_dns /etc/torproxy-dns
 set -g __onionfence_old_run /run/torproxy
 set -g __onionfence_guard_interval 3
+set -g __onionfence_heal_ticks 10 # связь Tor проверяется раз в столько циклов сторожа: около 30 секунд
+set -g __onionfence_heal_limit 6 # столько проверок подряд без цепочек, то есть 3 минуты, и Tor перезапускается
+set -g __onionfence_clock_ticks 720 # часы сверяются раз в столько проверок связи: около 6 часов
+set -g __onionfence_clock_first 718 # первая сверка примерно через минуту после запуска
+set -g __onionfence_time_sites https://www.torproject.org/ https://check.torproject.org/ https://www.eff.org/
 set -g __onionfence_auto_timeout 60 # bridges auto: сколько ждать один способ
 set -g __onionfence_guard_unit onionfence-guard
 set -g __onionfence_rotate_unit onionfence-rotate
@@ -118,6 +123,8 @@ function onionfence --description 'Весь трафик через Tor: мен�
             __onionfence_newip $argv[2..]
         case panic
             __onionfence_panic $argv[2..]
+        case timesync
+            __onionfence_timesync
         case country
             __onionfence_country $argv[2]
         case exclude
@@ -294,6 +301,7 @@ function __onionfence_help
     echo "  $(__onionfence_color --bold)onionfence clean файл$(__onionfence_color normal)      убрать метаданные из файлов (mat2)"
     echo "  $(__onionfence_color --bold)onionfence newip$(__onionfence_color normal)           новая цепочка Tor; --every 10m — менять по таймеру, off — снять"
     echo "  $(__onionfence_color --bold)onionfence panic$(__onionfence_color normal)           экстренно закрыть сеть и программы; panic off — снять"
+    echo "  $(__onionfence_color --bold)onionfence timesync$(__onionfence_color normal)        сверить часы через Tor: NTP в режиме закрыт"
     echo "  $(__onionfence_color --bold)onionfence country de$(__onionfence_color normal)      страна выхода (de, nl, us…); 'any' — любая"
     echo "  $(__onionfence_color --bold)onionfence exclude ru,by$(__onionfence_color normal)   не выходить через эти страны; 'off' — снять запрет"
     echo "  $(__onionfence_color --bold)onionfence bridges$(__onionfence_color normal)         мосты: auto | snowflake | obfs4 | add | off"
@@ -748,20 +756,49 @@ end
 
 # Сторож возвращает таблицу, если её стёрли (например, nftables.service делает flush ruleset):
 # без него трафик молча пошёл бы напрямую, а пользователь считал бы, что он в Tor.
-function __onionfence_guard_unit_text
+# Цикл сторожа: правила каждые несколько секунд; связь Tor и часы реже. Записан для systemd: «$$» и «%%».
+# Перезапуск Tor нужен после смены сети и сна: Snowflake и мосты иначе могут долго не пробовать снова.
+# Время берётся из ответа HTTPS через Tor: сертификат не даёт подделать его по дороге, а NTP в режиме закрыт.
+function __onionfence_guard_script
     set -l nft (command -s nft; or echo /usr/bin/nft)
     set -l runtime $__onionfence_run/rules.nft
     set -l persistent $__onionfence_etc/rules.nft
+    set -l ask "printf \"AUTHENTICATE %%s\r\nGETINFO status/circuit-established\r\nQUIT\r\n\" \"\$\$c\" | socat -t2 - TCP:127.0.0.1:$__onionfence_ctlport"
+    string join ' ' -- \
+        "tick=0; bad=0; clock=$__onionfence_clock_first;" \
+        "while sleep $__onionfence_guard_interval; do" \
+        "if ! $nft list table inet $__onionfence_table >/dev/null 2>&1; then" \
+        "if [ -r $runtime ]; then f=$runtime; else f=$persistent; fi; $nft -f \$\$f && echo restored rules from \$\$f;" \
+        "fi;" \
+        "tick=\$\$((tick+1)); [ \$\$tick -lt $__onionfence_heal_ticks ] && continue; tick=0;" \
+        "systemctl -q is-active $__onionfence_unit || { bad=0; continue; };" \
+        "[ -n \"\$\$(ip route show default 2>/dev/null)\" ] || { bad=0; continue; };" \
+        "c=\$\$(od -An -v -tx1 $__onionfence_cookie 2>/dev/null | tr -d \" \\n\");" \
+        "r=\$\$($ask 2>/dev/null);" \
+        "case \"\$\$r\" in *circuit-established=0*) bad=\$\$((bad+1)); clock=0; continue;; esac;" \
+        "bad_was=\$\$bad; bad=0;" \
+        "case \"\$\$r\" in *circuit-established=1*) ;; *) continue;; esac;" \
+        "clock=\$\$((clock+1)); [ \$\$clock -lt $__onionfence_clock_ticks ] && continue; clock=0;" \
+        "d=\$\$(curl -sI --max-time 60 --socks5-hostname 127.0.0.1:$__onionfence_socksport https://www.torproject.org/ 2>/dev/null | tr -d \"\r\" | sed -n \"s/^[Dd]ate: //p\");" \
+        "[ -n \"\$\$d\" ] || continue;" \
+        "t=\$\$(date -d \"\$\$d\" +%%s 2>/dev/null) || continue; n=\$\$(date +%%s); drift=\$\$((t-n)); [ \$\$drift -lt 0 ] && drift=\$\$((-drift));" \
+        "if [ \$\$drift -gt 30 ]; then date -s @\$\$t >/dev/null && echo clock corrected by \$\$drift seconds; fi;" \
+        "done"
+end
+
+function __onionfence_guard_unit_text
+    # сценарий восстановления перезапускает Tor, поэтому проверка «нет цепочек» стоит перед выходом из цикла
+    set -l script (__onionfence_guard_script | string replace 'case "$$r" in *circuit-established=0*) bad=$$((bad+1)); clock=0; continue;; esac;' 'case "$$r" in *circuit-established=0*) bad=$$((bad+1)); clock=0; if [ $$bad -ge '$__onionfence_heal_limit' ]; then bad=0; echo no working circuits, restarting tor; systemctl restart '$__onionfence_unit'; fi; continue;; esac;')
     printf '%s\n' \
         '[Unit]' \
-        'Description=onionfence: restore firewall rules if they are flushed' \
+        'Description=onionfence: restore rules, reconnect Tor and keep the clock right' \
         'DefaultDependencies=no' \
         "After=local-fs.target $__onionfence_boot_unit.service" \
         'Before=shutdown.target' \
         'Conflicts=shutdown.target' \
         '' \
         '[Service]' \
-        "ExecStart=/bin/sh -c 'while sleep $__onionfence_guard_interval; do $nft list table inet $__onionfence_table >/dev/null 2>&1 && continue; if [ -r $runtime ]; then f=$runtime; else f=$persistent; fi; $nft -f \$\$f && echo restored rules from \$\$f; done'" \
+        "ExecStart=/bin/sh -c '$script'" \
         'Restart=on-failure' \
         '' \
         '[Install]' \
@@ -1965,6 +2002,48 @@ function __onionfence_panic --argument-names action name
     echo "  Это не стирает следы с диска: для этого нужно шифрование диска."
 end
 
+# ---------- время через Tor ----------
+
+# Время по ответу сайта: секунды от начала эпохи, пусто при неудаче
+function __onionfence_site_time --argument-names url
+    set -l header (curl -sI --max-time 40 --socks5-hostname 127.0.0.1:$__onionfence_socksport $url 2>/dev/null | string match -ri '^date: .*')
+    test -n "$header"; or return 1
+    date -d (string replace -ri '^date:\s*' '' -- $header | string trim) +%s 2>/dev/null
+end
+
+# Сверяет часы с несколькими сайтами по HTTPS через Tor: один сайт не должен решать за всех
+function __onionfence_timesync
+    if not systemctl -q is-active $__onionfence_unit
+        __onionfence_say red "✘ Tor не запущен (onionfence on)"
+        return 1
+    end
+    set -l times
+    for url in $__onionfence_time_sites
+        set -a times (__onionfence_site_time $url)
+    end
+    if not set -q times[2]
+        __onionfence_say red "✘ Ответили меньше двух сайтов: время не изменено"
+        return 1
+    end
+    set -l sorted (printf '%s\n' $times | sort -n)
+    set -l median $sorted[(math "ceil($(count $sorted) / 2)")]
+    if test (math "abs($sorted[-1] - $sorted[1])") -gt 300
+        __onionfence_say red "✘ Сайты расходятся больше чем на 5 минут: время не изменено"
+        return 1
+    end
+    set -l drift (math "$median - $(date +%s)")
+    if test (math "abs($drift)") -le 5
+        __onionfence_say green "✔ Часы верны (расхождение $drift с)"
+        return
+    end
+    if sudo date -s "@$median" >/dev/null
+        __onionfence_say green "✔ Часы исправлены на $drift с"
+    else
+        __onionfence_say red "✘ Не удалось установить время"
+        return 1
+    end
+end
+
 # ---------- перенос со старого названия ----------
 
 function __onionfence_old_state_dir
@@ -2346,11 +2425,21 @@ hide требует NetworkManager и переподключает сеть, а 
 В Tor-режиме не работают UDP-сервисы: игры, звонки, QUIC, VPN и синхронизация
 времени. Трафик Docker и виртуальных машин не перехватывается.
 
-# Сторож правил
+# Сторож: правила, связь и часы
 
-Пока режим включён, служба onionfence-guard каждые 3 секунды проверяет таблицу
-файрвола и возвращает её, если её стёрли: например, перезапуск nftables.service
-очищает все правила. Запрет снимается только командой onionfence off.
+Пока режим включён, служба onionfence-guard:
+
+  - каждые 3 секунды проверяет таблицу файрвола и возвращает её, если её
+    стёрли: например, перезапуск nftables.service очищает все правила;
+  - каждые 30 секунд проверяет связь Tor: если при наличии сети цепочек нет
+    3 минуты подряд, например после сна или смены Wi-Fi, перезапускает Tor;
+  - через минуту после запуска и затем раз в 6 часов сверяет часы по HTTPS
+    через Tor и исправляет их при расхождении больше 30 секунд: NTP закрыт.
+
+Запрет снимается только командой onionfence off.
+Журнал сторожа: journalctl -u onionfence-guard.
+
+  timesync            сверить часы вручную, сразу по нескольким сайтам
 
 # Если что-то не работает
 
@@ -3044,6 +3133,7 @@ function __onionfence_menu
             '🌉  Мосты (обход блокировок Tor)' \
             '🔓  Исключения: мимо Tor' \
             '🚀  Защита при загрузке' \
+            '🕐  Сверить часы через Tor' \
             '📖  Руководство пользователя (q — назад)' \
             '🚪  Выход' | __onionfence_pick 'действие')
 
@@ -3053,6 +3143,8 @@ function __onionfence_menu
                 continue
             case '*Экстренное*'
                 __onionfence_panic
+            case '*Сверить часы*'
+                __onionfence_timesync
             case '*Чистый запуск*'
                 read -P '  Команда (например, firefox --no-remote): ' -t -l cmd
                 set -q cmd[1]; and __onionfence_run --fresh (string unescape -- $cmd)

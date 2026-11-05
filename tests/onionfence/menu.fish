@@ -26,6 +26,7 @@ set -g PICKS \
     '⏱️  Смена цепочки по таймеру' \
     '🚨  Экстренное отключение' \
     '── Наблюдение ──' \
+    '🕐  Сверить часы через Tor' \
     ''
 
 function __onionfence_pick
@@ -39,6 +40,9 @@ function __onionfence_newip
 end
 function __onionfence_rotate
     echo "rotate $argv" >>$T/menu.calls
+end
+function __onionfence_timesync
+    echo timesync >>$T/menu.calls
 end
 function __onionfence_panic
     echo panic >>$T/menu.calls
@@ -96,12 +100,12 @@ function journalctl
 end
 
 # Enter после newip, Enter после nl, код «ch» + Enter, (журнал без Enter), Enter после статуса и мостов
-printf '\n\nch\n\n\n\n\n\n\n\n\n\n\'~/ф.jpg\'\n\nru,by\n\n\n\ncurl \'https://a b\'\n\n192.0.2.1\n\nfirefox -x\n\n10m\n\n\n' | __onionfence_menu >$T/menu.out 2>&1
+printf '\n\nch\n\n\n\n\n\n\n\n\n\n\'~/ф.jpg\'\n\nru,by\n\n\n\ncurl \'https://a b\'\n\n192.0.2.1\n\nfirefox -x\n\n10m\n\n\n\n' | __onionfence_menu >$T/menu.out 2>&1
 t_eq "меню: выход по пустому выбору (Esc)" 0 $status
 set -l calls (grep -v -- '--quick' $T/menu.calls | string trim)
 t_eq "меню: действия в правильном порядке" \
-    "newip|country nl|country ch|journal -u tor -n 300 -e|status|bridges snowflake|on --strict|on|leaktest|browser|hide on|boot off|clean $HOME/ф.jpg|exclude ru,by|circuit|watch|guide|doctor|run curl https://a b|allow|allow 192.0.2.1|run --fresh firefox -x|rotate|rotate 10m|panic" (string join '|' $calls)
-t_eq "меню: перед каждым экраном быстрый статус" 25 (grep -c -- '--quick' $T/menu.calls)
+    "newip|country nl|country ch|journal -u tor -n 300 -e|status|bridges snowflake|on --strict|on|leaktest|browser|hide on|boot off|clean $HOME/ф.jpg|exclude ru,by|circuit|watch|guide|doctor|run curl https://a b|allow|allow 192.0.2.1|run --fresh firefox -x|rotate|rotate 10m|panic|timesync" (string join '|' $calls)
+t_eq "меню: перед каждым экраном быстрый статус" 26 (grep -c -- '--quick' $T/menu.calls)
 t_eq "меню: приветствие один раз, при запуске" 1 (grep -c 'Весь трафик устройства через TOR' $T/menu.out)
 t_eq "меню: приветствие на первом экране" 1 (command head -12 $T/menu.out | grep -c 'Весь трафик устройства через TOR')
 t_lacks "меню: нет ошибок read" "read:" (command cat $T/menu.out 2>/dev/null)
