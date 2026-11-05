@@ -1526,7 +1526,11 @@ torproxy bridges snowflake >/dev/null
 t_eq "мосты → настройка службы создана" 1 (test -e $dropin; and echo 1; or echo 0)
 t_has "служба получает свой resolv.conf" "$T/tor-dns" (command cat $dropin)
 t_has "… в нём публичные DNS" "nameserver 9.9.9.9" (command cat $T/tor-dns/resolv.conf)
-t_has "… подмена каталога resolved прячет его сокет" "$T/tor-dns/resolve:/run/systemd/resolve" (__torproxy_tor_dropin_text 1 0)
+# каталог свой: в контейнерах без systemd-resolved настоящего нет
+mkdir -p $T/fake-resolve
+set -g __torproxy_resolve_dir $T/fake-resolve
+t_has "… подмена каталога resolved прячет его сокет" "$T/tor-dns/resolve:$T/fake-resolve" (__torproxy_tor_dropin_text 1 0)
+set -g __torproxy_resolve_dir /run/systemd/resolve
 t_has "настройка применена" "systemctl daemon-reload" (command cat $T/calls.log)
 t_lacks "мостам ещё не нужно ждать сеть: это для загрузки" "network-online" (command cat $dropin)
 rm -f $T/calls.log
