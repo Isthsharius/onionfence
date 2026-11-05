@@ -1,9 +1,9 @@
-# Настоящий запуск torproxy на системе: sudo, systemd, nftables, сеть.
+# Настоящий запуск onionfence на системе: sudo, systemd, nftables, сеть.
 # Меняет сетевые правила машины — запускать только в одноразовой среде (CI),
 # на своём компьютере используйте run.fish.
 set -gx T (mktemp -d)
 set -gx DIR (path resolve (status dirname))
-set -g SRC (path resolve $DIR/../../functions/torproxy.fish)
+set -g SRC (path resolve $DIR/../../functions/onionfence.fish)
 source $SRC
 
 # проверки без заглушек из lib.fish
@@ -35,13 +35,13 @@ function istor
     echo "нет ответа"
 end
 
-echo "== "(torproxy version)
-t_has "платформа определена" "служба $__torproxy_unit" (torproxy version)
+echo "== "(onionfence version)
+t_has "платформа определена" "служба $__onionfence_unit" (onionfence version)
 t_eq "до включения — напрямую" false (istor)
 
-torproxy on
+onionfence on
 t_eq "on → код 0" 0 $status
-t_eq "таблица nftables создана" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "таблица nftables создана" 1 (sudo nft list tables | grep -c 'inet onionfence')
 t_eq "трафик идёт через Tor" true (istor)
 t_eq "DNS работает через Tor" 1 (getent hosts check.torproject.org >/dev/null; and echo 1; or echo 0)
 t_eq "UDP мимо Tor заблокирован" BLOCKED (python3 -c "
@@ -56,77 +56,77 @@ try:
 except PermissionError: print('BLOCKED')
 except OSError: print('BLOCKED')")
 
-torproxy leaktest
+onionfence leaktest
 t_eq "leaktest на настоящей системе → код 0" 0 $status
 
-torproxy newip
+onionfence newip
 t_eq "newip → код 0" 0 $status
-torproxy country de
-set -l out (torproxy status)
+onionfence country de
+set -l out (onionfence status)
 t_has "country de → выход в Германии" " DE" (string match '*Внешний IP*' -- $out)
 # Страна не должна «протекать»: раньше Conflux изредка уводил запросы мимо неё
 for i in (seq 5)
-    torproxy country any >/dev/null
-    torproxy newip >/dev/null
-    torproxy country de >/dev/null
+    onionfence country any >/dev/null
+    onionfence newip >/dev/null
+    onionfence country de >/dev/null
     # «нет ответа» не значит неверная страна: проверяем только ответы сайта
     set -l row
     for try in (seq 3)
-        set row (string match '*Внешний IP*' -- (torproxy status))
+        set row (string match '*Внешний IP*' -- (onionfence status))
         string match -q '*нет ответа*' -- "$row"; or break
         sleep 5
     end
     t_has "country de, попытка $i: выход в Германии" " DE" "$row"
 end
-torproxy country any >/dev/null
+onionfence country any >/dev/null
 
-set -l out (torproxy exclude de,nl)
+set -l out (onionfence exclude de,nl)
 t_eq "exclude → код 0" 0 $status
 for i in (seq 3)
-    set -l row (string match '*Внешний IP*' -- (torproxy status))
+    set -l row (string match '*Внешний IP*' -- (onionfence status))
     t_eq "exclude de,nl, попытка $i: выход вне этих стран" 0 (string match -qr ' (DE|NL)' -- "$row"; and echo 1; or echo 0)
 end
-torproxy exclude off >/dev/null
+onionfence exclude off >/dev/null
 
 curl -s --max-time 60 -o /dev/null https://check.torproject.org/api/ip
-t_has "circuit на настоящей системе" "──▶" (torproxy circuit)
-t_has "watch на настоящей системе: один кадр" "Цепочек" (torproxy watch </dev/null)
-t_has "guide открывается" "Быстрый старт" (torproxy guide)
-t_has "команда для других оболочек" "Страна выхода" (bash -c "'$DIR/../../bin/torproxy' status")
+t_has "circuit на настоящей системе" "──▶" (onionfence circuit)
+t_has "watch на настоящей системе: один кадр" "Цепочек" (onionfence watch </dev/null)
+t_has "guide открывается" "Быстрый старт" (onionfence guide)
+t_has "команда для других оболочек" "Страна выхода" (bash -c "'$DIR/../../bin/onionfence' status")
 
-torproxy doctor
+onionfence doctor
 t_eq "doctor на настоящей системе → код 0" 0 $status
 
 # Сторож: стираем таблицу как чужая программа и ждём, пока он её вернёт
-t_eq "сторож запущен" active (systemctl is-active torproxy-guard)
+t_eq "сторож запущен" active (systemctl is-active onionfence-guard)
 sudo nft flush ruleset
 for i in (seq 15)
-    sudo nft list table inet torproxy >/dev/null 2>&1; and break
+    sudo nft list table inet onionfence >/dev/null 2>&1; and break
     sleep 1
 end
-t_eq "сторож вернул стёртые правила" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "сторож вернул стёртые правила" 1 (sudo nft list tables | grep -c 'inet onionfence')
 t_eq "… и трафик снова идёт через Tor" true (istor)
 
-torproxy on --strict >/dev/null
+onionfence on --strict >/dev/null
 t_eq "on --strict → код 0" 0 $status
 t_eq "строгий режим: трафик через Tor" true (istor)
-torproxy leaktest
+onionfence leaktest
 t_eq "строгий режим: leaktest → код 0" 0 $status
-torproxy bridges auto >/dev/null
+onionfence bridges auto >/dev/null
 t_eq "bridges auto в строгом режиме → код 0" 0 $status
-t_eq "… режим остался строгим" 1 (sudo nft list table inet torproxy | grep -c torproxy-strict)
+t_eq "… режим остался строгим" 1 (sudo nft list table inet onionfence | grep -c onionfence-strict)
 t_eq "… трафик через Tor" true (istor)
 
-torproxy off
-t_eq "off: таблица удалена" 0 (sudo nft list tables | grep -c 'inet torproxy')
-t_eq "off: сторож остановлен" inactive (systemctl is-active torproxy-guard)
+onionfence off
+t_eq "off: таблица удалена" 0 (sudo nft list tables | grep -c 'inet onionfence')
+t_eq "off: сторож остановлен" inactive (systemctl is-active onionfence-guard)
 sleep 5
-t_eq "off: сторож не вернул таблицу" 0 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "off: сторож не вернул таблицу" 0 (sudo nft list tables | grep -c 'inet onionfence')
 t_eq "off: снова напрямую" false (istor)
 
 # Одна программа через Tor: настоящая изоляция, остальная система идёт напрямую
 function run_istor
-    torproxy run curl -s --max-time 60 https://check.torproject.org/api/ip | string match '{*' | jq -r .IsTor
+    onionfence run curl -s --max-time 60 https://check.torproject.org/api/ip | string match '{*' | jq -r .IsTor
 end
 for i in (seq 3)
     set -g run_result (run_istor)
@@ -134,107 +134,137 @@ for i in (seq 3)
     sleep 5
 end
 t_eq "run: программа идёт через Tor" true "$run_result"
-t_eq "run: после неё Tor снова остановлен" inactive (systemctl is-active $__torproxy_unit)
+t_eq "run: после неё Tor снова остановлен" inactive (systemctl is-active $__onionfence_unit)
 t_eq "run: система всё это время напрямую" false (istor)
-t_eq "run: пространство убрано" 0 (sudo ip netns list | grep -c torproxy-run)
-t_eq "run: правила убраны" 0 (sudo nft list tables | grep -c torproxy_run)
-sudo systemctl start $__torproxy_unit
+t_eq "run: пространство убрано" 0 (sudo ip netns list | grep -c onionfence-run)
+t_eq "run: правила убраны" 0 (sudo nft list tables | grep -c onionfence_run)
+sudo systemctl start $__onionfence_unit
 for i in (seq 120)
     curl -s --max-time 10 --socks5-hostname 127.0.0.1:9050 -o /dev/null https://check.torproject.org/api/ip; and break
     sleep 1
 end
-torproxy run --force sh -c 'exit 7' >/dev/null
+onionfence run --force sh -c 'exit 7' >/dev/null
 t_eq "run: код возврата программы" 7 $status
-torproxy run --force sh -c 'test ! -e /run/systemd/resolve/io.systemd.Resolve' >/dev/null
+onionfence run --force sh -c 'test ! -e /run/systemd/resolve/io.systemd.Resolve' >/dev/null
 t_eq "run: сокет systemd-resolved спрятан" 0 $status
-torproxy run --force sh -c 'getent hosts check.torproject.org' >/dev/null
+onionfence run --force sh -c 'getent hosts check.torproject.org' >/dev/null
 t_eq "run: имена разрешаются через Tor" 0 $status
-torproxy run --force sh -c 'ping -c1 -W2 1.1.1.1' >/dev/null 2>&1
+onionfence run --force sh -c 'ping -c1 -W2 1.1.1.1' >/dev/null 2>&1
 t_eq "run: ICMP отброшен" 1 $status
-torproxy run --force python3 -c "
+onionfence run --force python3 -c "
 import socket
 try:
     socket.create_connection(('2001:4860:4860::8888',443),3); raise SystemExit(0)
 except OSError:
     raise SystemExit(5)" >/dev/null 2>&1
 t_eq "run: IPv6 недоступен" 5 $status
-torproxy run --force ip route show >$T/run-route.txt
+onionfence run --force ip route show >$T/run-route.txt
 t_has "run: своя сетевая среда" "172.31.250" (command cat $T/run-route.txt)
-torproxy run --force id -u >$T/run-id.txt
+onionfence run --force id -u >$T/run-id.txt
 t_eq "run: программа не от root" (id -u) (string match -r '^\d+$' -- (command cat $T/run-id.txt))
 # программа, оставшаяся в фоне, не даёт убрать пространство; --stop завершает её
-torproxy run --force sh -c 'sleep 300 >/dev/null 2>&1 &' >/dev/null
-t_eq "run: фоновая программа оставляет пространство" 1 (sudo ip netns list | grep -c torproxy-run)
-torproxy run --stop >/dev/null
-t_eq "run --stop убирает всё" 0 (sudo ip netns list | grep -c torproxy-run)
-sudo systemctl stop $__torproxy_unit
+onionfence run --force sh -c 'sleep 300 >/dev/null 2>&1 &' >/dev/null
+t_eq "run: фоновая программа оставляет пространство" 1 (sudo ip netns list | grep -c onionfence-run)
+onionfence run --stop >/dev/null
+t_eq "run --stop убирает всё" 0 (sudo ip netns list | grep -c onionfence-run)
+sudo systemctl stop $__onionfence_unit
 
 # Исключения: заведомо известный адрес идёт напрямую, а сняли исключение — снова через Tor
 function cf_ip
     curl -s --max-time 40 https://1.1.1.1/cdn-cgi/trace | string match -rg '^ip=(.*)$'
 end
 set -l direct_ip (cf_ip)
-torproxy on >/dev/null
-torproxy allow 1.1.1.1 >/dev/null
+onionfence on >/dev/null
+onionfence allow 1.1.1.1 >/dev/null
 t_eq "allow: адрес идёт напрямую, с настоящего IP" "$direct_ip" (cf_ip)
 t_eq "allow: остальное через Tor" true (istor)
-t_eq "allow: сторож работает и после смены правил" active (systemctl is-active torproxy-guard)
-torproxy allow off >/dev/null
+t_eq "allow: сторож работает и после смены правил" active (systemctl is-active onionfence-guard)
+onionfence allow off >/dev/null
 t_eq "allow off: настоящего IP больше не видно" 0 (test "$(cf_ip)" = "$direct_ip"; and echo 1; or echo 0)
-torproxy off -y >/dev/null
+onionfence off -y >/dev/null
 
 # Мосты при уже включённых правилах: у транспорта должен быть DNS мимо Tor. Без этого был замкнутый круг.
 if command -q snowflake-client
-    torproxy on >/dev/null
-    torproxy bridges snowflake >$T/sf-under-rules.txt 2>&1
+    onionfence on >/dev/null
+    onionfence bridges snowflake >$T/sf-under-rules.txt 2>&1
     set -l sf_rc $status
     t_eq "мосты при включённых правилах: Tor подключился" 0 $sf_rc
-    test $sf_rc = 0; or journalctl -u $__torproxy_unit -n 40 --no-pager | cut -c1-150
-    set -l pid (systemctl show -p MainPID --value $__torproxy_unit)
+    test $sf_rc = 0; or journalctl -u $__onionfence_unit -n 40 --no-pager | cut -c1-150
+    set -l pid (systemctl show -p MainPID --value $__onionfence_unit)
     t_has "служба Tor видит свой resolv.conf" "nameserver 9.9.9.9" (sudo nsenter -t $pid -m cat /etc/resolv.conf)
     t_eq "сокет resolved скрыт от Tor" 0 (sudo nsenter -t $pid -m sh -c 'test -e /run/systemd/resolve/io.systemd.Resolve'; and echo 1; or echo 0)
     t_eq "остальная система resolv.conf не меняла" 0 (grep -c 9.9.9.9 /etc/resolv.conf)
-    sudo nsenter -t $pid -m setpriv --reuid=$__torproxy_user --clear-groups getent hosts app.datapacket.com >/dev/null
+    sudo nsenter -t $pid -m setpriv --reuid=$__onionfence_user --clear-groups getent hosts app.datapacket.com >/dev/null
     t_eq "пользователь Tor разрешает имя брокера" 0 $status
     t_eq "трафик системы всё равно через Tor" true (istor)
-    torproxy bridges off >/dev/null
-    t_eq "мосты сняты: настройка службы убрана" 1 (test ! -e /etc/systemd/system/$__torproxy_unit.service.d/torproxy.conf; and echo 1; or echo 0)
-    torproxy off -y >/dev/null
+    onionfence bridges off >/dev/null
+    t_eq "мосты сняты: настройка службы убрана" 1 (test ! -e /etc/systemd/system/$__onionfence_unit.service.d/onionfence.conf; and echo 1; or echo 0)
+    onionfence off -y >/dev/null
 end
 
 # Защита при загрузке: перезагрузить машину CI нельзя, поэтому запускаем службу вручную
-torproxy boot on
+onionfence boot on
 t_eq "boot on → код 0" 0 $status
-t_eq "служба включена" enabled (systemctl is-enabled torproxy-boot)
-sudo systemctl start torproxy-boot
-t_eq "служба поднимает правила" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "служба включена" enabled (systemctl is-enabled onionfence-boot)
+sudo systemctl start onionfence-boot
+t_eq "служба поднимает правила" 1 (sudo nft list tables | grep -c 'inet onionfence')
 # При настоящей загрузке Tor запускает systemd, а до его старта выхода быть не должно
 curl -s --max-time 5 -o /dev/null https://check.torproject.org/api/ip
 t_eq "пока Tor не запущен, выхода нет" 1 (test $status -ne 0; and echo 1; or echo 0)
-sudo systemctl start $__torproxy_unit
+sudo systemctl start $__onionfence_unit
 for i in (seq 120)
     curl -s --max-time 10 -o /dev/null https://check.torproject.org/api/ip; and break
     sleep 1
 end
 t_eq "… и трафик идёт через Tor" true (istor)
-torproxy off -y >/dev/null
-torproxy boot off
-t_eq "boot off: служба удалена" 1 (systemctl cat torproxy-boot >/dev/null 2>&1; and echo 0; or echo 1)
+onionfence off -y >/dev/null
+onionfence boot off
+t_eq "boot off: служба удалена" 1 (systemctl cat onionfence-boot >/dev/null 2>&1; and echo 0; or echo 1)
 t_eq "после boot off — напрямую" false (istor)
+
+# Перенос со старого имени на настоящей системе: воссоздаём состояние прошлой версии
+function __e2e_old
+    string replace -a onionfence torproxy
+end
+sudo mkdir -p /etc/torproxy
+__onionfence_torrc >/dev/null
+sudo sed -i -e 's/^# --- onionfence transparent ---$/# --- torproxy transparent ---/' -e 's/^# --- onionfence end ---$/# --- torproxy end ---/' $__onionfence_torrc
+__onionfence_rules strict | __e2e_old | sudo tee /etc/torproxy/rules.nft >/dev/null
+__onionfence_rules strict | __e2e_old | sudo nft -f -
+__onionfence_boot_unit_text | __e2e_old | sudo tee /etc/systemd/system/torproxy-boot.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable torproxy-boot $__onionfence_unit
+sudo systemctl start $__onionfence_unit
+t_eq "старая таблица есть" 1 (sudo nft list tables | grep -c 'inet torproxy')
+onionfence status >/dev/null
+t_eq "перенос: старая таблица снята" 0 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "перенос: новая таблица стоит" 1 (sudo nft list tables | grep -c 'inet onionfence')
+t_eq "перенос: строгий режим сохранён" 1 (sudo nft list table inet onionfence | grep -c onionfence-strict)
+t_eq "перенос: старая служба убрана" 0 (test -e /etc/systemd/system/torproxy-boot.service; and echo 1; or echo 0)
+t_eq "перенос: новая служба включена" enabled (systemctl is-enabled onionfence-boot)
+t_eq "перенос: сторож работает" active (systemctl is-active onionfence-guard)
+for i in (seq 60)
+    curl -s --max-time 10 -o /dev/null https://check.torproject.org/api/ip; and break
+    sleep 1
+end
+t_eq "перенос: трафик через Tor" true (istor)
+onionfence off -y >/dev/null
+onionfence boot off >/dev/null
+t_eq "перенос: после off напрямую" false (istor)
 
 # Установка с нуля, как у нового пользователя: чистый домашний каталог, пакеты уже стоят
 set -l fresh $T/fresh
 mkdir -p $fresh
 env HOME=$fresh sh $DIR/../../install.sh --yes >/dev/null 2>&1
 t_eq "install.sh на настоящей системе" 0 $status
-t_has "установленная команда работает" "служба $__torproxy_unit" (env HOME=$fresh bash -c "$fresh/.local/bin/torproxy version")
-env HOME=$fresh $fresh/.local/bin/torproxy on >/dev/null
-t_eq "установленная команда включает режим" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_has "установленная команда работает" "служба $__onionfence_unit" (env HOME=$fresh bash -c "$fresh/.local/bin/onionfence version")
+env HOME=$fresh $fresh/.local/bin/onionfence on >/dev/null
+t_eq "установленная команда включает режим" 1 (sudo nft list tables | grep -c 'inet onionfence')
 t_eq "… и трафик через Tor" true (istor)
-env HOME=$fresh $fresh/.local/bin/torproxy uninstall -y >/dev/null
-t_eq "uninstall снимает правила" 0 (sudo nft list tables | grep -c 'inet torproxy')
-t_eq "uninstall убирает блок из torrc" 0 (sudo grep -c 'torproxy' $__torproxy_torrc)
-t_eq "uninstall останавливает Tor" inactive (systemctl is-active $__torproxy_unit)
+env HOME=$fresh $fresh/.local/bin/onionfence uninstall -y >/dev/null
+t_eq "uninstall снимает правила" 0 (sudo nft list tables | grep -c 'inet onionfence')
+t_eq "uninstall убирает блок из torrc" 0 (sudo grep -c 'onionfence' $__onionfence_torrc)
+t_eq "uninstall останавливает Tor" inactive (systemctl is-active $__onionfence_unit)
 t_eq "после uninstall снова напрямую" false (istor)
 
 set -l failed (grep -c '^FAIL' $T/results)

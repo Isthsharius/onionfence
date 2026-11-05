@@ -1,36 +1,36 @@
 # Maintainer: Isthsharius <217949973+Isthsharius@users.noreply.github.com>
-pkgname=torproxy
-pkgver=0.2.0
+pkgname=onionfence
+pkgver=0.3.0
 pkgrel=1
 pkgdesc='Route all system traffic through Tor with one fish command (nftables, bridges, TUI menu)'
 arch=('any')
-url='https://github.com/Isthsharius/torproxy'
+url='https://github.com/Isthsharius/onionfence'
 license=('GPL-3.0-or-later')
 depends=('fish' 'tor' 'nftables' 'sudo' 'systemd' 'curl' 'jq' 'socat' 'iproute2' 'util-linux')
 optdepends=(
   'fzf: interactive menu with arrow keys'
   'lyrebird-proxy: Tor bridges (obfs4, webtunnel, snowflake)'
-  'torbrowser-launcher: torproxy browser'
-  'mat2: torproxy clean'
-  'networkmanager: torproxy hide'
-  'less: scrolling in torproxy guide'
+  'torbrowser-launcher: onionfence browser'
+  'mat2: onionfence clean'
+  'networkmanager: onionfence hide'
+  'less: scrolling in onionfence guide'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('2316a420d965ec8fc0d5a691e3cbc16bd23bef2d2fe268ad61c1c876baacf703')
+sha256sums=('SKIP') # контрольная сумма появится вместе с меткой v0.3.0
 
 check() {
   cd "$pkgname-$pkgver"
-  fish --no-config -n functions/torproxy.fish
-  fish --no-config -n bin/torproxy
-  fish --no-config -n completions/torproxy.fish
-  fish --no-config -c "source functions/torproxy.fish; torproxy version" | grep -q "torproxy $pkgver"
+  fish --no-config -n functions/onionfence.fish
+  fish --no-config -n bin/onionfence
+  fish --no-config -n completions/onionfence.fish
+  fish --no-config -c "source functions/onionfence.fish; onionfence version" | grep -q "onionfence $pkgver"
 }
 
 package() {
   cd "$pkgname-$pkgver"
-  install -Dm644 functions/torproxy.fish "$pkgdir/usr/share/fish/vendor_functions.d/torproxy.fish"
-  install -Dm644 completions/torproxy.fish "$pkgdir/usr/share/fish/vendor_completions.d/torproxy.fish"
-  install -Dm755 bin/torproxy "$pkgdir/usr/bin/torproxy"
+  install -Dm644 functions/onionfence.fish "$pkgdir/usr/share/fish/vendor_functions.d/onionfence.fish"
+  install -Dm644 completions/onionfence.fish "$pkgdir/usr/share/fish/vendor_completions.d/onionfence.fish"
+  install -Dm755 bin/onionfence "$pkgdir/usr/bin/onionfence"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 INSTALL.md "$pkgdir/usr/share/doc/$pkgname/INSTALL.md"
 }

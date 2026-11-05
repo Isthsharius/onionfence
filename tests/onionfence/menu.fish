@@ -24,61 +24,61 @@ set -g PICKS \
     '🔓  Исключения: мимо Tor' \
     ''
 
-function __torproxy_pick
+function __onionfence_pick
     echo $PICKS[1]
     set -e PICKS[1]
 end
 function clear
 end
-function __torproxy_newip
+function __onionfence_newip
     echo newip >>$T/menu.calls
 end
-function __torproxy_country
+function __onionfence_country
     echo "country $argv" >>$T/menu.calls
 end
-function __torproxy_status
+function __onionfence_status
     echo "status $argv" >>$T/menu.calls
 end
-function __torproxy_bridges
+function __onionfence_bridges
     echo "bridges $argv" >>$T/menu.calls
 end
-function __torproxy_on
+function __onionfence_on
     echo "on $argv" >>$T/menu.calls
 end
-function __torproxy_leaktest
+function __onionfence_leaktest
     echo leaktest >>$T/menu.calls
 end
-function __torproxy_browser
+function __onionfence_browser
     echo browser >>$T/menu.calls
 end
-function __torproxy_hide
+function __onionfence_hide
     echo "hide $argv" >>$T/menu.calls
 end
-function __torproxy_boot
+function __onionfence_boot
     echo "boot $argv" >>$T/menu.calls
 end
-function __torproxy_clean
+function __onionfence_clean
     echo "clean $argv" >>$T/menu.calls
 end
-function __torproxy_exclude
+function __onionfence_exclude
     echo "exclude $argv" >>$T/menu.calls
 end
-function __torproxy_circuit
+function __onionfence_circuit
     echo circuit >>$T/menu.calls
 end
-function __torproxy_guide
+function __onionfence_guide
     echo guide >>$T/menu.calls
 end
-function __torproxy_doctor
+function __onionfence_doctor
     echo doctor >>$T/menu.calls
 end
-function __torproxy_run
+function __onionfence_run
     echo "run $argv" >>$T/menu.calls
 end
-function __torproxy_allow
+function __onionfence_allow
     echo "allow $argv" >>$T/menu.calls
 end
-function __torproxy_watch
+function __onionfence_watch
     echo watch >>$T/menu.calls
 end
 function journalctl
@@ -86,12 +86,12 @@ function journalctl
 end
 
 # Enter после newip, Enter после nl, код «ch» + Enter, (журнал без Enter), Enter после статуса и мостов
-printf '\n\nch\n\n\n\n\n\n\n\n\n\n\'~/ф.jpg\'\n\nru,by\n\n\n\ncurl \'https://a b\'\n\n192.0.2.1\n\n' | __torproxy_menu >$T/menu.out 2>&1
+printf '\n\nch\n\n\n\n\n\n\n\n\n\n\'~/ф.jpg\'\n\nru,by\n\n\n\ncurl \'https://a b\'\n\n192.0.2.1\n\n' | __onionfence_menu >$T/menu.out 2>&1
 t_eq "меню: выход по пустому выбору (Esc)" 0 $status
 set -l calls (grep -v -- '--quick' $T/menu.calls | string trim)
 t_eq "меню: действия в правильном порядке" \
     "newip|country nl|country ch|journal -u tor -n 300 -e|status|bridges snowflake|on --strict|on|leaktest|browser|hide on|boot off|clean $HOME/ф.jpg|exclude ru,by|circuit|watch|guide|doctor|run curl https://a b|allow|allow 192.0.2.1" (string join '|' $calls)
 t_eq "меню: перед каждым экраном быстрый статус" 21 (grep -c -- '--quick' $T/menu.calls)
-t_eq "меню: приветствие один раз, при запуске" 1 (grep -c 'весь трафик через Tor' $T/menu.out)
-t_eq "меню: приветствие на первом экране" 1 (command head -12 $T/menu.out | grep -c 'весь трафик через Tor')
+t_eq "меню: приветствие один раз, при запуске" 1 (grep -c 'Весь трафик устройства через TOR' $T/menu.out)
+t_eq "меню: приветствие на первом экране" 1 (command head -12 $T/menu.out | grep -c 'Весь трафик устройства через TOR')
 t_lacks "меню: нет ошибок read" "read:" (command cat $T/menu.out 2>/dev/null)

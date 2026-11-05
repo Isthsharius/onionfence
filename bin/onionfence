@@ -1,0 +1,18 @@
+#!/usr/bin/env -S fish --no-config
+# Запуск onionfence из любой оболочки: сам код лежит в functions/onionfence.fish.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -l self (path resolve (status filename))
+for f in (path dirname $self)/../functions/onionfence.fish \
+        (path dirname $self)/../share/fish/vendor_functions.d/onionfence.fish \
+        /usr/share/fish/vendor_functions.d/onionfence.fish \
+        $XDG_CONFIG_HOME/fish/functions/onionfence.fish \
+        $HOME/.config/fish/functions/onionfence.fish
+    if test -r $f
+        source $f
+        onionfence $argv
+        exit $status
+    end
+end
+echo "onionfence: не найден onionfence.fish" >&2
+exit 127

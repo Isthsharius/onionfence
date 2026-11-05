@@ -8,7 +8,7 @@ function sudo
         case od
             echo 00 11
         case nft
-            echo 'table inet torproxy {}'
+            echo 'table inet onionfence {}'
     end
 end
 function systemctl
@@ -16,14 +16,14 @@ function systemctl
 end
 if test "$argv[2]" = guide
     set -l before (stty -g)
-    torproxy guide
+    onionfence guide
     test "$before" = "$(stty -g)"; and echo STTY_OK; or echo STTY_CHANGED
     exit
 end
 if test "$argv[2]" = live
     # настоящие ControlPort и сайт проверки, заглушены только sudo и systemctl
-    set -g __torproxy_ctlport $TP_CTL
-    set -g __torproxy_cookie $TP_COOKIE
+    set -g __onionfence_ctlport $TP_CTL
+    set -g __onionfence_cookie $TP_COOKIE
     functions -e sudo
     function sudo
         test "$argv[1]" = -n; and set -e argv[1]
@@ -37,16 +37,16 @@ if test "$argv[2]" = live
         end
     end
 else
-    function __torproxy_watch_ip_start
-        set -g __torproxy_w_ip 1.2.3.4
-        set -g __torproxy_w_istor true
-        set -g __torproxy_w_ip_next (math (date +%s) + 300)
+    function __onionfence_watch_ip_start
+        set -g __onionfence_w_ip 1.2.3.4
+        set -g __onionfence_w_istor true
+        set -g __onionfence_w_ip_next (math (date +%s) + 300)
     end
-    function __torproxy_newip
+    function __onionfence_newip
         echo NEWNYM_SENT >>$argv[1]
         printf 'NEWNYM_SENT\n' >/dev/tty
     end
-    function __torproxy_control
+    function __onionfence_control
         for c in $argv
             switch $c
                 case 'GETINFO traffic/read'
@@ -62,7 +62,7 @@ else
     end
 end
 set -l before (stty -g)
-__torproxy_watch
+__onionfence_watch
 set -l rc $status
 test "$before" = "$(stty -g)"; and echo STTY_OK; or echo STTY_CHANGED
 exit $rc

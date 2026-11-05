@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Запускает панель torproxy в настоящем псевдотерминале и нажимает клавиши."""
+"""Запускает панель onionfence в настоящем псевдотерминале и нажимает клавиши."""
 import os, pty, select, sys, time
 
 child, src, scenario = sys.argv[1:4]

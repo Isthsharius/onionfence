@@ -1,4 +1,4 @@
-# Как установить torproxy
+# Как установить onionfence
 
 Инструкция для тех, кто видит программу впервые. Опыт работы с терминалом почти не нужен: копируйте команды по одной.
 
@@ -14,7 +14,7 @@
 |---|---|
 | Ссылка на GitHub или ничего нет | [Способ 1](#способ-1-с-github) |
 | Передали папку или архив с программой | [Способ 2](#способ-2-передали-папку-или-архив) |
-| Передали один файл `torproxy.fish` | [Способ 3](#способ-3-передали-один-файл-torproxyfish) |
+| Передали один файл `onionfence.fish` | [Способ 3](#способ-3-передали-один-файл-onionfencefish) |
 | Передали файл `.pkg.tar.zst` (только Arch и производные) | [Способ 4](#способ-4-передали-пакет-pkgtarzst) |
 
 **Если программу передал другой человек, сначала [проверьте её](#проверьте-файл-который-вам-передали).** Она работает с правами администратора и управляет всем вашим трафиком, поэтому изменённая копия опасна.
@@ -24,12 +24,12 @@
 Если `git` нет, установите его: `sudo pacman -S git` (Arch) или `sudo apt install git` (Debian, Ubuntu).
 
 ```sh
-git clone https://github.com/Isthsharius/torproxy.git
-cd torproxy
+git clone https://github.com/Isthsharius/onionfence.git
+cd onionfence
 sh install.sh
 ```
 
-Без `git`: откройте [страницу выпусков](https://github.com/Isthsharius/torproxy/tags), скачайте архив последней версии, распакуйте его и переходите к способу 2.
+Без `git`: откройте [страницу выпусков](https://github.com/Isthsharius/onionfence/tags), скачайте архив последней версии, распакуйте его и переходите к способу 2.
 
 ## Способ 2: передали папку или архив
 
@@ -41,9 +41,9 @@ sh install.sh
 sh install.sh
 ```
 
-Установщик покажет список нужных программ, спросит разрешение поставить их и установит torproxy. Ваша текущая оболочка не важна, подойдут bash, zsh и fish.
+Установщик покажет список нужных программ, спросит разрешение поставить их и установит onionfence. Ваша текущая оболочка не важна, подойдут bash, zsh и fish.
 
-## Способ 3: передали один файл `torproxy.fish`
+## Способ 3: передали один файл `onionfence.fish`
 
 1. Поставьте нужные программы.
 
@@ -57,7 +57,7 @@ sh install.sh
    ```
 2. Откройте терминал в папке с файлом и выполните:
    ```sh
-   fish --no-config -c 'source ./torproxy.fish; torproxy install'
+   fish --no-config -c 'source ./onionfence.fish; onionfence install'
    ```
 
 Автодополнения по Tab при таком способе не будет: его файл лежит отдельно. На работу программы это не влияет.
@@ -67,20 +67,20 @@ sh install.sh
 Только для Arch и производных. Откройте терминал в папке с файлом:
 
 ```sh
-sudo pacman -U ./torproxy-*.pkg.tar.zst
+sudo pacman -U ./onionfence-*.pkg.tar.zst
 ```
 
-Необязательные программы pacman покажет после установки. Удаляется пакет так: `sudo pacman -R torproxy`.
+Необязательные программы pacman покажет после установки. Удаляется пакет так: `sudo pacman -R onionfence`.
 
 Собрать такой пакет самому можно из папки `packaging/aur` командой `makepkg -si`.
 
 ## Проверьте файл, который вам передали
 
-Убедитесь, что файл совпадает с опубликованным. Подставьте версию из команды ниже (`torproxy.fish` лежит в папке `functions` или отдельно):
+Убедитесь, что файл совпадает с опубликованным. Подставьте версию из команды ниже (`onionfence.fish` лежит в папке `functions` или отдельно):
 
 ```sh
-sha256sum functions/torproxy.fish
-curl -sL https://raw.githubusercontent.com/Isthsharius/torproxy/v0.3.0/functions/torproxy.fish | sha256sum
+sha256sum functions/onionfence.fish
+curl -sL https://raw.githubusercontent.com/Isthsharius/onionfence/v0.3.0/functions/onionfence.fish | sha256sum
 ```
 
 Если длинные строки совпали, файл настоящий. Если нет, это другая версия или изменённая копия: не запускайте её, скачайте программу с GitHub. Проверьте и то, что адрес в команде ведёт на тот репозиторий, которому вы доверяете.
@@ -90,41 +90,45 @@ curl -sL https://raw.githubusercontent.com/Isthsharius/torproxy/v0.3.0/functions
 Откройте **новый** терминал:
 
 ```sh
-torproxy version    # показывает версию и вашу систему
-torproxy doctor     # проверяет программы и настройки
-torproxy            # открывает меню
+onionfence version    # показывает версию и вашу систему
+onionfence doctor     # проверяет программы и настройки
+onionfence            # открывает меню
 ```
 
 Первое включение:
 
 ```sh
-torproxy on         # включить
-torproxy leaktest   # убедиться, что утечек нет
-torproxy off        # вернуть обычный интернет
+onionfence on         # включить
+onionfence leaktest   # убедиться, что утечек нет
+onionfence off        # вернуть обычный интернет
 ```
 
-После включения перезапустите браузер и программы, открытые раньше. Подробное руководство: `torproxy guide`.
+После включения перезапустите браузер и программы, открытые раньше. Подробное руководство: `onionfence guide`.
 
-**Если нет интернета**, выполните `torproxy off`: эта команда возвращает обычный интернет.
+**Если нет интернета**, выполните `onionfence off`: эта команда возвращает обычный интернет.
 
 ## Необязательные программы
 
 | Для чего | Arch и производные | Debian, Ubuntu |
 |---|---|---|
 | Мосты, если Tor заблокирован | `paru -S lyrebird-proxy` (из AUR) | `sudo apt install obfs4proxy snowflake-client` |
-| `torproxy browser` | `sudo pacman -S torbrowser-launcher` | `sudo apt install torbrowser-launcher` |
-| `torproxy clean` | `sudo pacman -S mat2` | `sudo apt install mat2` |
-| `torproxy run` | `sudo pacman -S util-linux` (обычно уже есть) | `sudo apt install util-linux` (обычно уже есть) |
+| `onionfence browser` | `sudo pacman -S torbrowser-launcher` | `sudo apt install torbrowser-launcher` |
+| `onionfence clean` | `sudo pacman -S mat2` | `sudo apt install mat2` |
+| `onionfence run` | `sudo pacman -S util-linux` (обычно уже есть) | `sudo apt install util-linux` (обычно уже есть) |
 
 ## Если что-то пошло не так
 
 | Сообщение | Что делать |
 |---|---|
-| `torproxy: команда не найдена` | Откройте новый терминал. Не помогло: добавьте `~/.local/bin` в `PATH`, установщик показывает нужную команду |
+| `onionfence: команда не найдена` | Откройте новый терминал. Не помогло: добавьте `~/.local/bin` в `PATH`, установщик показывает нужную команду |
 | `fish: команда не найдена` | Поставьте `fish` (способ 3, шаг 1) |
 | `Tor не установлен` | Поставьте `tor` (способ 3, шаг 1) |
-| `Tor не подключился` | `torproxy doctor`, затем `torproxy bridges auto`: возможно, Tor заблокирован в вашей сети |
-| Другое | `torproxy doctor` покажет, что не так. Также можно [открыть issue](https://github.com/Isthsharius/torproxy/issues), но без своих IP-адресов и личных данных |
+| `Tor не подключился` | `onionfence doctor`, затем `onionfence bridges auto`: возможно, Tor заблокирован в вашей сети |
+| Другое | `onionfence doctor` покажет, что не так. Также можно [открыть issue](https://github.com/Isthsharius/onionfence/issues), но без своих IP-адресов и личных данных |
+
+## Если стояла старая версия torproxy
+
+Раньше программа называлась torproxy. Установите новую версию любым способом: при первом запуске `onionfence` настройки перенесутся сами, в том числе защита при загрузке. Старая команда `torproxy` пока тоже работает.
 
 ## Обновление
 
@@ -133,7 +137,7 @@ torproxy off        # вернуть обычный интернет
 С GitHub:
 
 ```sh
-cd torproxy
+cd onionfence
 git pull
 sh install.sh
 ```
@@ -141,7 +145,7 @@ sh install.sh
 ## Удаление
 
 ```sh
-torproxy uninstall
+onionfence uninstall
 ```
 
-Команда выключит Tor-режим и защиту при загрузке, вернёт настройки сети, уберёт блок из `/etc/tor/torrc` и удалит файлы программы. Сам Tor и остальные программы останутся: они могут быть нужны другим приложениям. Если ставили пакетом, в конце выполните `sudo pacman -R torproxy`.
+Команда выключит Tor-режим и защиту при загрузке, вернёт настройки сети, уберёт блок из `/etc/tor/torrc` и удалит файлы программы. Сам Tor и остальные программы останутся: они могут быть нужны другим приложениям. Если ставили пакетом, в конце выполните `sudo pacman -R onionfence`.

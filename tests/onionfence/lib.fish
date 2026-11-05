@@ -1,21 +1,24 @@
 # Общие функции тестов: проверки и заглушки системных команд.
-# Ожидает переменные окружения: T (рабочий каталог теста), SRC (путь к torproxy.fish).
+# Ожидает переменные окружения: T (рабочий каталог теста), SRC (путь к onionfence.fish).
 
 source $SRC
-set -gx XDG_STATE_HOME $T/state # тесты не должны видеть настоящее состояние `torproxy hide`
+set -gx XDG_STATE_HOME $T/state # тесты не должны видеть настоящее состояние `onionfence hide`
 # заглушки ниже рассчитаны на раскладку Arch; Debian/Ubuntu проверяются отдельно
-set -g __torproxy_platform arch
-set -g __torproxy_unit tor
-set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
+set -g __onionfence_platform arch
+set -g __onionfence_unit tor
+set -g __onionfence_cookie /var/lib/tor/control_auth_cookie
 # сторож в тестах не должен трогать настоящие /run и systemd
 mkdir -p $T/run-sd
-set -g __torproxy_run $T/run
-set -g __torproxy_run_systemd $T/run-sd
+set -g __onionfence_run $T/run
+set -g __onionfence_run_systemd $T/run-sd
 # настоящие каталоги системы тесты не должны даже читать: там может быть включена защита при загрузке
-set -g __torproxy_etc $T/system-etc
-set -g __torproxy_systemd_dir $T/system-sd
-set -g __torproxy_dropin_root $T/dropin
-set -g __torproxy_tor_dns_dir $T/tor-dns
+set -g __onionfence_etc $T/system-etc
+set -g __onionfence_systemd_dir $T/system-sd
+set -g __onionfence_dropin_root $T/dropin
+set -g __onionfence_old_etc $T/old-etc
+set -g __onionfence_old_dns $T/old-dns
+set -g __onionfence_old_run $T/old-run
+set -g __onionfence_tor_dns_dir $T/tor-dns
 
 # sed, а не string: builtin string внутри функции не читает канал, если у fish нет терминала
 function nocolor
@@ -110,47 +113,47 @@ function systemctl
         set alive (command cat $T/tor.state 2>/dev/null; or echo 0)
     end
     switch "$argv"
-        case "-q is-active $__torproxy_unit"
+        case "-q is-active $__onionfence_unit"
             test $alive = 1
-        case "is-active $__torproxy_unit"
+        case "is-active $__onionfence_unit"
             if test $alive = 1
                 echo active
             else
                 echo inactive
                 return 3
             end
-        case "restart $__torproxy_unit"
+        case "restart $__onionfence_unit"
             test "$MOCK_RESTART_FAIL" = 1; and return 1
             if test "$LIVE" = 1
                 __mock_tor_kill
                 rm -f $T/tor.log
-                # вывод отвязан, иначе (torproxy on | …) ждёт закрытия канала фоновым Tor
-                tor -f $__torproxy_torrc --quiet </dev/null >/dev/null 2>&1 &
+                # вывод отвязан, иначе (onionfence on | …) ждёт закрытия канала фоновым Tor
+                tor -f $__onionfence_torrc --quiet </dev/null >/dev/null 2>&1 &
                 echo $last_pid >$T/tor.pid
                 disown
             else
                 echo 1 >$T/tor.state
             end
-        case "stop $__torproxy_unit"
+        case "stop $__onionfence_unit"
             if test "$LIVE" = 1
                 __mock_tor_kill
                 rm -f $T/tor.pid
             else
                 echo 0 >$T/tor.state
             end
-        case "-q is-enabled $__torproxy_boot_unit"
+        case "-q is-enabled $__onionfence_boot_unit"
             test -e $T/boot.enabled
-        case "-q is-enabled $__torproxy_unit"
+        case "-q is-enabled $__onionfence_unit"
             test "$MOCK_TOR_ENABLED" = 1
-        case "-q is-active $__torproxy_guard_unit"
+        case "-q is-active $__onionfence_guard_unit"
             test -e $T/guard.active
-        case "start $__torproxy_guard_unit"
+        case "start $__onionfence_guard_unit"
             test "$MOCK_GUARD_FAIL" != 1; and touch $T/guard.active
-        case "stop $__torproxy_guard_unit"
+        case "stop $__onionfence_guard_unit"
             rm -f $T/guard.active
         case 'enable *'
             test "$MOCK_ENABLE_FAIL" != 1
-        case "reload $__torproxy_unit"
+        case "reload $__onionfence_unit"
             test "$LIVE" = 1; and kill -HUP (command cat $T/tor.pid)
     end
 end

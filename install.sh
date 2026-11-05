@@ -1,5 +1,5 @@
 #!/bin/sh
-# Установка torproxy: нужные программы, затем сам скрипт в домашний каталог.
+# Установка onionfence: нужные программы, затем сам скрипт в домашний каталог.
 # Использование: sh install.sh [--yes] [--no-deps]
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -u
@@ -23,8 +23,8 @@ if [ "$(id -u)" = 0 ]; then
 fi
 
 here=$(cd -- "$(dirname -- "$0")" && pwd)
-if [ ! -r "$here/functions/torproxy.fish" ]; then
-    echo "Не найден functions/torproxy.fish рядом с install.sh. Запустите установщик из папки программы." >&2
+if [ ! -r "$here/functions/onionfence.fish" ]; then
+    echo "Не найден functions/onionfence.fish рядом с install.sh. Запустите установщик из папки программы." >&2
     exit 1
 fi
 
@@ -63,4 +63,4 @@ if ! command -v fish >/dev/null 2>&1; then
     exit 1
 fi
 
-exec fish --no-config -c 'source $argv[1]; torproxy install' "$here/functions/torproxy.fish"
+exec fish --no-config -c 'source $argv[1]; onionfence install' "$here/functions/onionfence.fish"
