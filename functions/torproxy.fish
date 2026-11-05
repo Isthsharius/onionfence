@@ -1560,6 +1560,7 @@ function __torproxy_launcher_text
         'for f in (path dirname $self)/../functions/torproxy.fish \\' \
         '        (path dirname $self)/../share/fish/vendor_functions.d/torproxy.fish \\' \
         '        /usr/share/fish/vendor_functions.d/torproxy.fish \\' \
+        '        $XDG_CONFIG_HOME/fish/functions/torproxy.fish \\' \
         '        $HOME/.config/fish/functions/torproxy.fish' \
         '    if test -r $f' \
         '        source $f' \

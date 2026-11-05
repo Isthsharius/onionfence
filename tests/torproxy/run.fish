@@ -1443,6 +1443,13 @@ env HOME=$h1 XDG_CONFIG_HOME=$h1/.config fish --no-config -c 'source '$h1'/.conf
 t_eq "повторная установка поверх себя: код 0" 0 $status
 t_eq "… файл не испорчен" 1 (cmp -s $SRC $h1/.config/fish/functions/torproxy.fish; and echo 1; or echo 0)
 
+# XDG_CONFIG_HOME вне домашнего каталога: запускатель должен найти файл и там
+set -l h4 $T/home4
+mkdir -p $h4 $T/xdg4
+env HOME=$h4 XDG_CONFIG_HOME=$T/xdg4 fish --no-config -c 'source '$T/single/torproxy.fish'; torproxy install' >/dev/null 2>&1
+t_eq "XDG_CONFIG_HOME: файл там" 1 (test -r $T/xdg4/fish/functions/torproxy.fish; and echo 1; or echo 0)
+t_has "XDG_CONFIG_HOME: команда работает" "torproxy $__torproxy_version" (env HOME=$h4 XDG_CONFIG_HOME=$T/xdg4 sh -c "'$h4/.local/bin/torproxy' version")
+
 # Установщик из папки, без установки пакетов
 if test (id -u) = 0
     # контейнер CI работает от root, а там установщик должен отказаться
