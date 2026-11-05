@@ -1391,6 +1391,7 @@ t_eq "run передаёт код возврата программы" 7 $pipest
 t_has "run запускает Tor, если он выключен" "systemctl restart tor" (command cat $T/calls.log)
 t_lacks "run не включает правила всей системы" "nft -f" (command cat $T/calls.log)
 t_has "аргументы переданы без искажений" 'echo "два слова"' (command cat $T/run.args)
+t_lacks "env не получает «--»: он принял бы его за программу" "--" (command tail -n +3 $T/run.args | string match -v '*=*' | string join ' ')
 t_eq "первыми идут uid и gid" "torproxy-run $(id -u) $(id -g)" (string join ' ' (command head -3 $T/run.args))
 t_has "окружение графики и PATH передано" "PATH=" (command cat $T/run.args)
 t_eq "после программы Tor снова остановлен" 0 (command cat $T/tor.state)
@@ -1443,31 +1444,38 @@ t_eq "повторная установка поверх себя: код 0" 0 $
 t_eq "… файл не испорчен" 1 (cmp -s $SRC $h1/.config/fish/functions/torproxy.fish; and echo 1; or echo 0)
 
 # Установщик из папки, без установки пакетов
-set -l h2 $T/home2
-mkdir -p $h2
-set -l out (env HOME=$h2 XDG_CONFIG_HOME=$h2/.config sh $repo/install.sh --no-deps 2>&1)
-t_eq "install.sh --no-deps → код 0" 0 $status
-t_eq "install.sh: автодополнение поставлено" 1 (test -r $h2/.config/fish/completions/torproxy.fish; and echo 1; or echo 0)
-t_has "install.sh: команда работает" "torproxy $__torproxy_version" (env HOME=$h2 $h2/.local/bin/torproxy version)
-set -l out (env HOME=$h2 sh $repo/install.sh --bad 2>&1)
-t_eq "install.sh: неизвестный параметр → код 2" 2 $status
-mkdir -p $T/noprog
-command cp $repo/install.sh $T/noprog/
-set -l out (env HOME=$h2 sh $T/noprog/install.sh --no-deps 2>&1)
-t_eq "install.sh без программы рядом → код 1" 1 $status
-t_has "… объяснено" "Не найден" $out
-# нет подтверждения — ничего не ставим
-set -l fakebin $T/fakebin
-mkdir -p $fakebin
-printf '#!/bin/sh\necho PACMAN-CALLED >>%s\n' $T/pm.log >$fakebin/pacman
-printf '#!/bin/sh\n"$@"\n' >$fakebin/sudo
-chmod +x $fakebin/pacman $fakebin/sudo
-echo n | env HOME=$h2 PATH="$fakebin:"(string join : $PATH) sh $repo/install.sh >/dev/null 2>&1
-t_eq "install.sh: ответ «нет» → код 1" 1 $status
-t_eq "… пакеты не ставились" 0 (test -e $T/pm.log; and echo 1; or echo 0)
-echo y | env HOME=$h2 XDG_CONFIG_HOME=$h2/.config PATH="$fakebin:"(string join : $PATH) sh $repo/install.sh >/dev/null 2>&1
-t_eq "install.sh: ответ «да» → код 0" 0 $status
-t_eq "… пакеты поставлены" 1 (test -e $T/pm.log; and echo 1; or echo 0)
+if test (id -u) = 0
+    # контейнер CI работает от root, а там установщик должен отказаться
+    set -l out (env HOME=$T sh $repo/install.sh --no-deps 2>&1)
+    t_eq "install.sh от root → код 1" 1 $status
+    t_has "… объяснено" "без sudo" $out
+else
+    set -l h2 $T/home2
+    mkdir -p $h2
+    set -l out (env HOME=$h2 XDG_CONFIG_HOME=$h2/.config sh $repo/install.sh --no-deps 2>&1)
+    t_eq "install.sh --no-deps → код 0" 0 $status
+    t_eq "install.sh: автодополнение поставлено" 1 (test -r $h2/.config/fish/completions/torproxy.fish; and echo 1; or echo 0)
+    t_has "install.sh: команда работает" "torproxy $__torproxy_version" (env HOME=$h2 $h2/.local/bin/torproxy version)
+    set -l out (env HOME=$h2 sh $repo/install.sh --bad 2>&1)
+    t_eq "install.sh: неизвестный параметр → код 2" 2 $status
+    mkdir -p $T/noprog
+    command cp $repo/install.sh $T/noprog/
+    set -l out (env HOME=$h2 sh $T/noprog/install.sh --no-deps 2>&1)
+    t_eq "install.sh без программы рядом → код 1" 1 $status
+    t_has "… объяснено" "Не найден" $out
+    # нет подтверждения — ничего не ставим
+    set -l fakebin $T/fakebin
+    mkdir -p $fakebin
+    printf '#!/bin/sh\necho PACMAN-CALLED >>%s\n' $T/pm.log >$fakebin/pacman
+    printf '#!/bin/sh\n"$@"\n' >$fakebin/sudo
+    chmod +x $fakebin/pacman $fakebin/sudo
+    echo n | env HOME=$h2 PATH="$fakebin:"(string join : $PATH) sh $repo/install.sh >/dev/null 2>&1
+    t_eq "install.sh: ответ «нет» → код 1" 1 $status
+    t_eq "… пакеты не ставились" 0 (test -e $T/pm.log; and echo 1; or echo 0)
+    echo y | env HOME=$h2 XDG_CONFIG_HOME=$h2/.config PATH="$fakebin:"(string join : $PATH) sh $repo/install.sh >/dev/null 2>&1
+    t_eq "install.sh: ответ «да» → код 0" 0 $status
+    t_eq "… пакеты поставлены" 1 (test -e $T/pm.log; and echo 1; or echo 0)
+end
 
 # Удаление: возвращает систему в исходное состояние
 reset_state

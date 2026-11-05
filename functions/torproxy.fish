@@ -802,7 +802,7 @@ end
 
 # Сценарий от root: создаёт пространство, запускает программу, убирает всё после неё. Он целиком в одном
 # процессе, чтобы уборка выполнилась и после Ctrl+C: fish при Ctrl+C бросил бы остаток функции.
-# Параметры: uid gid ПЕРЕМЕННАЯ=ЗНАЧЕНИЕ… -- команда…
+# Параметры: uid gid ПЕРЕМЕННАЯ=ЗНАЧЕНИЕ… команда… (без «--»: env принял бы его за имя программы)
 function __torproxy_run_script
     set -l ns $__torproxy_ns
     set -l h $__torproxy_ns_host
@@ -937,7 +937,7 @@ function __torproxy_run
     for v in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS PULSE_SERVER HOME USER LOGNAME PATH LANG LC_ALL TERM
         set -q $v; and set -a envs "$v=$$v"
     end
-    sudo sh -c (__torproxy_run_script | string collect) torproxy-run (id -u) (id -g) $envs -- $argv
+    sudo sh -c (__torproxy_run_script | string collect) torproxy-run (id -u) (id -g) $envs $argv
     set -l rc $status
 
     # Tor запускали мы и он больше никому не нужен: возвращаем как было
