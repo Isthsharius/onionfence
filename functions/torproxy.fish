@@ -1205,7 +1205,10 @@ function __torproxy_circuit
         return 1
     end
     echo
-    echo "  $(set_color --bold)"(__torproxy_chain $picked[1] "$picked[2]")"$(set_color normal)"
+    set -l chain (__torproxy_chain $picked[1] "$picked[2]")
+    set_color --bold
+    echo "  $chain"
+    set_color normal
     echo
     set -l hops (string split , -- $picked[1])
     set -l bridges (__torproxy_bridges_current)
@@ -1315,8 +1318,12 @@ function __torproxy_watch_frame
             end
         end
         __torproxy_row "Внешний IP" $ip
-        __torproxy_row "↓ "(__torproxy_rate $__torproxy_w_down[-1]) "$(set_color magenta)$(__torproxy_spark $__torproxy_w_down[(math "max(1, $(count $__torproxy_w_down) - $width + 1)")..-1])$(set_color normal)"
-        __torproxy_row "↑ "(__torproxy_rate $__torproxy_w_up[-1]) "$(set_color cyan)$(__torproxy_spark $__torproxy_w_up[(math "max(1, $(count $__torproxy_w_up) - $width + 1)")..-1])$(set_color normal)"
+        # в график идут только последние значения, сколько помещается
+        set -l from (math "max(1, "(count $__torproxy_w_down)" - $width + 1)")
+        set -l down_graph (__torproxy_spark $__torproxy_w_down[$from..-1])
+        set -l up_graph (__torproxy_spark $__torproxy_w_up[$from..-1])
+        __torproxy_row "↓ "(__torproxy_rate $__torproxy_w_down[-1]) "$(set_color magenta)$down_graph$(set_color normal)"
+        __torproxy_row "↑ "(__torproxy_rate $__torproxy_w_up[-1]) "$(set_color cyan)$up_graph$(set_color normal)"
         __torproxy_row Цепочек "$__torproxy_w_circuits"
         __torproxy_row Работает (__torproxy_duration $__torproxy_w_uptime)
         test -n "$__torproxy_w_chain"; and __torproxy_row Путь $__torproxy_w_chain
