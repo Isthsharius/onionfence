@@ -23,7 +23,7 @@ set -g __onionfence_socksport 9050 # SocksPort по умолчанию: его �
 set -g __onionfence_boot_unit onionfence-boot
 set -g __onionfence_etc /etc/onionfence
 set -g __onionfence_systemd_dir /etc/systemd/system
-set -g __onionfence_leak_wait 6
+set -g __onionfence_leak_wait 4
 # старое имя программы: нужно, чтобы перенести настройки (см. __onionfence_migrate)
 set -g __onionfence_old_etc /etc/torproxy
 set -g __onionfence_old_dns /etc/torproxy-dns
@@ -599,6 +599,8 @@ table inet $__onionfence_table {
     }
     chain filter_out {
         type filter hook output priority 0; policy drop;
+        # пустой UDP-пакет роняет DNSPort в Tor 0.4.9: любая программа могла бы так отключить Tor
+        udp dport $__onionfence_dnsport udp length 8 drop
         meta skuid $tor_uid accept
         $lo_rule
         $lan_rule
@@ -950,6 +952,7 @@ table inet onionfence_run {
     }
     chain filter_pre {
         type filter hook prerouting priority 0; policy accept;
+        iifname \"$h\" udp length 8 drop
         iifname \"$h\" ct status dnat accept
         iifname \"$h\" drop
     }
@@ -1415,8 +1418,12 @@ function __onionfence_leaktest
     __onionfence_leak_row $ok "Внешний IP" $ip; or set failed (math $failed + 1)
 
     # 192.0.2.1 — адрес из документации, DNS там нет: ответ может прийти только от Tor
-    set -l reply (printf '\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01' \
-        | socat -t$__onionfence_leak_wait - UDP:192.0.2.1:53 2>/dev/null | od -An -tx1)
+    # Ввод держим открытым и завершаем socat по таймеру. socat 1.8.1 при конце ввода не ждёт ответа и шлёт
+    # пустой UDP-пакет, а на таком пакете DNSPort в Tor 0.4.9 падает.
+    set -l reply (begin
+            printf '\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01'
+            sleep (math $__onionfence_leak_wait + 1)
+        end | timeout $__onionfence_leak_wait socat - UDP:192.0.2.1:53 2>/dev/null | od -An -tx1)
     set ok 0
     test -n "$reply"; and set ok 1
     __onionfence_leak_row $ok "DNS" "запросы перехватывает Tor"; or set failed (math $failed + 1)

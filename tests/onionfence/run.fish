@@ -1845,6 +1845,15 @@ set -e __onionfence_w_progress
 reset_state
 
 # ======================================================================
+section "Проверка DNS в leaktest"
+# socat 1.8.1 при конце ввода шлёт пустой пакет, и Tor падает: конца ввода быть не должно
+set -l leak_src (functions __onionfence_leaktest | string collect)
+t_has "leaktest завершает socat по таймеру" 'timeout $__onionfence_leak_wait socat' "$leak_src"
+t_lacks "leaktest не ждёт через socat -t" 'socat -t$__onionfence_leak_wait' "$leak_src"
+t_has "правила отбрасывают пустой пакет" "udp dport 9053 udp length 8 drop" (__onionfence_rules)
+t_has "и в строгом режиме" "udp dport 9053 udp length 8 drop" (__onionfence_rules strict)
+
+# ======================================================================
 section "Меню"
 reset_state
 fish $DIR/menu.fish

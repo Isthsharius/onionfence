@@ -31,6 +31,8 @@ fi
 if [ "$deps" = 1 ]; then
     if command -v pacman >/dev/null 2>&1; then
         install_cmd="sudo pacman -S --needed fish tor nftables curl jq socat iproute2 util-linux fzf"
+        # без этого pacman снова спросит подтверждение, а без терминала откажется
+        [ "$assume_yes" = 1 ] && install_cmd="$install_cmd --noconfirm"
     elif command -v apt-get >/dev/null 2>&1; then
         install_cmd="sudo apt-get install -y fish tor nftables curl jq socat iproute2 util-linux fzf"
     else

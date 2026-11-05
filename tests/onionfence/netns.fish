@@ -171,12 +171,29 @@ nft add rule inet obs post ip daddr '{ 1.1.1.1, 192.0.2.1, 192.168.88.1 }' count
 t_eq "программа: TCP наружу → TransPort" $TP (iprobe tcp 1.1.1.1 443)
 t_eq "программа: DNS → DNSPort" $DP (iprobe udp 192.0.2.1 53)
 t_eq "программа: UDP наружу отброшен" TIMEOUT (iprobe udp 1.1.1.1 443)
+t_has "правила отдельной программы отбрасывают пустой пакет" 'udp length 8 drop' (nft list table inet onionfence_run)
 t_eq "программа: UDP в локальную сеть отброшен" TIMEOUT (iprobe udp 192.168.88.1 5000)
 t_eq "программа: ничего не ушло в сеть напрямую" 0 (nft list counter inet obs leak | string match -rg 'packets (\d+)')
 t_eq "хост при этом работает как обычно" LEFT (probe user udp 1.1.1.1 443)
 nft delete table inet onionfence_run
 ip link del $__onionfence_ns_host
 kill $child 2>/dev/null
+
+section "Пустой пакет не доходит до DNSPort Tor"
+__onionfence_on >/dev/null 2>&1
+function empty_dns
+    setpriv --reuid=1000 --regid=1000 --clear-groups python3 -I -c "
+import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+try:
+    s.sendto(sys.argv[2].encode(),(sys.argv[1],53)); print('SENT')
+except PermissionError:
+    print('BLOCKED')" $argv
+end
+t_eq "пустой пакет на порт 53 отброшен" BLOCKED (empty_dns 192.168.88.1 '')
+t_eq "обычный DNS проходит" SENT (empty_dns 192.168.88.1 x)
+t_eq "обычный DNS по-прежнему в Tor" $DP (probe user udp 192.168.88.1 53)
+__onionfence_off -y >/dev/null 2>&1
 
 section "onionfence panic"
 __onionfence_on >/dev/null 2>&1

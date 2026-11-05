@@ -58,12 +58,15 @@ except OSError: print('BLOCKED')")
 
 onionfence leaktest
 t_eq "leaktest на настоящей системе → код 0" 0 $status
+t_eq "leaktest не уронил Tor" active (systemctl is-active $__onionfence_unit)
+t_eq "… и Tor работает" true (istor)
 
 onionfence newip
 t_eq "newip → код 0" 0 $status
 onionfence country de
 set -l out (onionfence status)
 t_has "country de → выход в Германии" " DE" (string match '*Внешний IP*' -- $out)
+set -g country_answers 0
 # Страна не должна «протекать»: раньше Conflux изредка уводил запросы мимо неё
 for i in (seq 5)
     onionfence country any >/dev/null
@@ -76,8 +79,15 @@ for i in (seq 5)
         string match -q '*нет ответа*' -- "$row"; or break
         sleep 5
     end
-    t_has "country de, попытка $i: выход в Германии" " DE" "$row"
+    # неверная страна — ошибка, а сайт, который не ответил, ничего о стране не говорит
+    if string match -q '*нет ответа*' -- "$row"
+        echo "  (country de, попытка $i: сайт проверки не ответил)"
+    else
+        t_has "country de, попытка $i: выход в Германии" " DE" "$row"
+        set -g country_answers (math $country_answers + 1)
+    end
 end
+t_eq "сайт проверки ответил хотя бы раз из 5" 1 (test $country_answers -ge 1; and echo 1; or echo 0)
 onionfence country any >/dev/null
 
 set -l out (onionfence exclude de,nl)
