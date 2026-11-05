@@ -22,6 +22,6 @@ pkgbase = onionfence
 	optdepends = networkmanager: onionfence hide
 	optdepends = less: scrolling in onionfence guide
 	source = onionfence-0.3.0.tar.gz::https://github.com/Isthsharius/onionfence/archive/refs/tags/v0.3.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = a05f3437f5ad14fdc59a51b607fd225c2caad377079ff4747926299d4ccee39e
 
 pkgname = onionfence

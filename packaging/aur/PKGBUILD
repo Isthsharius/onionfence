@@ -16,7 +16,7 @@ optdepends=(
   'less: scrolling in onionfence guide'
 )
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP') # контрольная сумма появится вместе с меткой v0.3.0
+sha256sums=('a05f3437f5ad14fdc59a51b607fd225c2caad377079ff4747926299d4ccee39e')
 
 check() {
   cd "$pkgname-$pkgver"
