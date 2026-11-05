@@ -64,6 +64,7 @@ end
 
 # MOCK_FAIL=tee|od   — эта команда под sudo «падает» (проверка pipefail)
 function sudo
+    test "$argv[1]" = -v; and return 0
     if test "$argv[1]" = -n
         set -e argv[1]
         test "$MOCK_SUDO_CACHED" = 0; and return 1

@@ -1,0 +1,17 @@
+#!/usr/bin/env -S fish --no-config
+# Запуск torproxy из любой оболочки: сам код лежит в functions/torproxy.fish.
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -l self (path resolve (status filename))
+for f in (path dirname $self)/../functions/torproxy.fish \
+        (path dirname $self)/../share/fish/vendor_functions.d/torproxy.fish \
+        /usr/share/fish/vendor_functions.d/torproxy.fish \
+        $HOME/.config/fish/functions/torproxy.fish
+    if test -r $f
+        source $f
+        torproxy $argv
+        exit $status
+    end
+end
+echo "torproxy: не найден torproxy.fish" >&2
+exit 127

@@ -35,7 +35,7 @@ t_eq "torproxy -h → код 0" 0 $status
 set -l out (torproxy blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "torproxy newip" $out
-t_eq "в справке все 14 команд" 14 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
+t_eq "в справке все 18 команд" 18 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -564,6 +564,7 @@ set -l out (torproxy off </dev/null | nocolor)
 t_eq "без терминала: не спрашивает, выключает" 0 $pipestatus[1]
 t_has "предупреждение называет программы" "opera, telegram-desktop" $out
 t_has "… и выключает" "systemctl stop tor" (command cat $T/calls.log 2>/dev/null)
+functions -q isatty; and functions -c isatty __saved_isatty
 function isatty
     true
 end
@@ -585,6 +586,7 @@ rm -f $T/calls.log
 torproxy off -y >/dev/null
 t_has "off -y: без вопроса" "delete table" (command cat $T/calls.log 2>/dev/null)
 functions -e isatty
+functions -q __saved_isatty; and functions -c __saved_isatty isatty; and functions -e __saved_isatty
 set -gx MOCK_RULES 0
 t_lacks "режим не включён → без предупреждения" "Через Tor" (torproxy off </dev/null | nocolor)
 functions -e ss
@@ -703,10 +705,416 @@ set -l out (env TERM=dumb fish -c '
     __torproxy_bar 47; echo
     __torproxy_status --quick
     MOCK_FAIL=journalctl torproxy on' 2>&1)
-t_eq "справка: все 14 команд видны" 14 (string match -r '^\s+torproxy' -- $out | count)
+t_eq "справка: все 18 команд видны" 18 (string match -r '^\s+torproxy' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out
+
+# ======================================================================
+section "Исключение стран"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+torproxy exclude ru,BY >/dev/null
+t_eq "exclude → код 0" 0 $status
+t_eq "exclude: строка torrc, коды в нижнем регистре" 1 (grep -cx 'ExcludeExitNodes {ru},{by}' $__torproxy_torrc)
+t_eq "exclude: чтение обратно" "ru by" (string join ' ' (__torproxy_exclude_current))
+t_has "статус показывает исключённые страны" "ru, by" (__torproxy_status --quick | nocolor)
+t_has "exclude без аргумента показывает список" "ru, by" (torproxy exclude | nocolor)
+torproxy on >/dev/null
+t_eq "on не теряет исключённые страны" 1 (grep -cx 'ExcludeExitNodes {ru},{by}' $__torproxy_torrc)
+torproxy country ru >/dev/null
+t_eq "нельзя выбрать исключённую страну" 1 $status
+t_eq "… страна не применилась" любая (__torproxy_exit_country)
+torproxy country de >/dev/null
+t_eq "страна и исключения вместе" "1 1" (grep -cx 'ExitNodes {de}' $__torproxy_torrc)" "(grep -cx 'ExcludeExitNodes {ru},{by}' $__torproxy_torrc)
+torproxy exclude de >/dev/null
+t_eq "нельзя исключить выбранную страну" 1 $status
+torproxy country any >/dev/null
+for bad in r russia ru,, 'ru;by' 12
+    set -l before (md5sum <$__torproxy_torrc)
+    torproxy exclude $bad >/dev/null 2>&1
+    set -l rc $status
+    if test $bad = 'ru,,'
+        t_eq "лишние запятые не мешают" 0 $rc
+    else
+        t_eq "неверный код «$bad» → код 1" 1 $rc
+        t_eq "… torrc не изменён" $before (md5sum <$__torproxy_torrc)
+    end
+end
+torproxy exclude off >/dev/null
+t_eq "exclude off → код 0" 0 $status
+t_eq "exclude off убирает строку" 0 (grep -c ExcludeExitNodes $__torproxy_torrc)
+if __torproxy_has_conflux
+    t_eq "без ограничений Conflux не трогаем" 0 (grep -c ConfluxEnabled $__torproxy_torrc)
+    torproxy country de >/dev/null
+    t_eq "со страной Conflux выключен" 1 (grep -cx 'ConfluxEnabled 0' $__torproxy_torrc)
+    torproxy country any >/dev/null
+    torproxy exclude ru >/dev/null
+    t_eq "с исключением Conflux выключен" 1 (grep -cx 'ConfluxEnabled 0' $__torproxy_torrc)
+    torproxy exclude off >/dev/null
+    t_eq "снято — Conflux снова как в сети" 0 (grep -c ConfluxEnabled $__torproxy_torrc)
+end
+functions -c __torproxy_has_conflux __mock_has_conflux
+function __torproxy_has_conflux; false; end
+torproxy country de >/dev/null
+t_eq "старый Tor без Conflux: настройки нет, иначе он не запустится" 0 (grep -c ConfluxEnabled $__torproxy_torrc)
+torproxy country any >/dev/null
+functions -e __torproxy_has_conflux
+functions -c __mock_has_conflux __torproxy_has_conflux
+
+# ======================================================================
+section "Автоподбор мостов"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+set -g __torproxy_auto_timeout 1
+set -l saved_path $PATH
+set -gx PATH $T/bin $saved_path
+functions -c journalctl __mock_journalctl
+# MOCK_WORKS — какой способ «подключается»
+function journalctl
+    echo "journalctl $argv" >>$T/calls.log
+    set -l have direct
+    grep -q '^Bridge obfs4 ' $__torproxy_torrc; and set have obfs4
+    grep -q '^Bridge snowflake ' $__torproxy_torrc; and set have snowflake
+    test "$have" = "$MOCK_WORKS"; and echo "Tor[1]: Bootstrapped 100% (mock)"; or echo "Tor[1]: Bootstrapped 5% (mock)"
+end
+
+set -gx MOCK_WORKS direct
+set -l out (torproxy bridges auto 2>&1 | nocolor)
+t_eq "auto: напрямую работает → код 0" 0 $pipestatus[1]
+t_has "auto: сообщает способ" "Работает: direct" $out
+t_eq "auto: мостов нет" 0 (grep -c '^Bridge ' $__torproxy_torrc)
+t_eq "auto: Tor был выключен → остаётся выключенным" 0 (command cat $T/tor.state)
+
+set -gx MOCK_WORKS obfs4
+set -l out (torproxy bridges auto 2>&1 | nocolor)
+t_has "auto: напрямую не вышло → obfs4" "Работает: obfs4" $out
+t_eq "auto: записаны все встроенные obfs4" 7 (grep -c '^Bridge obfs4 ' $__torproxy_torrc)
+t_eq "auto: snowflake не понадобился" 0 (grep -c '^Bridge snowflake ' $__torproxy_torrc)
+
+set -gx MOCK_WORKS snowflake
+set -l out (torproxy bridges auto --no-direct 2>&1 | nocolor)
+t_lacks "auto --no-direct: без мостов не пробует" "direct" $out
+t_has "auto --no-direct: дошёл до snowflake" "Работает: snowflake" $out
+t_eq "auto: записаны 2 snowflake" 2 (grep -c '^Bridge snowflake ' $__torproxy_torrc)
+
+set -gx MOCK_WORKS none
+set -l before (__torproxy_bridges_current)
+set -l out (torproxy bridges auto 2>&1 | nocolor)
+t_eq "auto: ничего не работает → код 1" 1 $pipestatus[1]
+t_has "auto: подсказка про свои мосты" "@GetBridgesBot" $out
+t_eq "auto: настройки мостов возвращены" "$before" "$(string join ' ' -- (__torproxy_bridges_current))"
+t_eq "auto: Tor остановлен" 0 (command cat $T/tor.state)
+
+# режим был включён: снова включаем в том же виде
+set -gx MOCK_WORKS direct
+torproxy bridges off >/dev/null
+torproxy on >/dev/null
+rm -f $T/calls.log
+set -l out (torproxy bridges auto 2>&1 | nocolor)
+t_eq "auto при включённом режиме → код 0" 0 $pipestatus[1]
+t_has "auto при включённом режиме: режим включён снова" "Tor-режим ВКЛЮЧЁН" $out
+t_eq "auto: Tor работает" 1 (command cat $T/tor.state)
+
+set -gx MOCK_WORKS none
+set -l out (torproxy bridges auto 2>&1 | nocolor)
+t_eq "auto, режим включён, всё упало → код 1" 1 $pipestatus[1]
+t_eq "… Tor снова запущен, а не брошен" 1 (command cat $T/tor.state)
+
+# нет транспорта: способ пропускается, а не ломает подбор
+torproxy off -y >/dev/null
+functions -c __torproxy_pt_binary __mock_pt
+function __torproxy_pt_binary; return 1; end
+set -gx MOCK_WORKS direct
+set -l out (torproxy bridges auto --no-direct 2>&1 | nocolor)
+t_eq "auto без транспортов → код 1" 1 $pipestatus[1]
+t_has "auto без транспортов: объясняет" "obfs4 пропущен" $out
+functions -e __torproxy_pt_binary
+functions -c __mock_pt __torproxy_pt_binary
+functions -e __mock_pt
+
+functions -e journalctl
+functions -c __mock_journalctl journalctl
+functions -e __mock_journalctl
+set -e MOCK_WORKS
+set -gx PATH $saved_path
+set -g __torproxy_auto_timeout 60
+torproxy bridges off >/dev/null
+
+# ======================================================================
+section "Команда для любой оболочки и автодополнение"
+set -g repo (path resolve $DIR/../..)
+t_eq "bin/torproxy: синтаксис" 0 (fish --no-config -n $repo/bin/torproxy; echo $status)
+t_has "bin/torproxy запускается не из fish" "torproxy $__torproxy_version" (sh -c "'$repo/bin/torproxy' version")
+sh -c "'$repo/bin/torproxy' nosuch" >/dev/null 2>&1
+t_eq "bin/torproxy передаёт код возврата" 1 $status
+mkdir -p $T/inst/bin
+ln -sf $repo/bin/torproxy $T/inst/bin/torproxy
+t_has "bin/torproxy работает через символическую ссылку" "torproxy $__torproxy_version" ($T/inst/bin/torproxy version)
+t_eq "completions: синтаксис" 0 (fish --no-config -n $repo/completions/torproxy.fish; echo $status)
+function compl
+    fish --no-config -c "source '$repo/completions/torproxy.fish'; complete -C '$argv'" | string split -f1 \t
+end
+t_has "дополнение: команды" "bridges" (compl 'torproxy br')
+t_has "дополнение: exclude" "exclude" (compl 'torproxy ex')
+t_has "дополнение: режимы мостов" "auto" (compl 'torproxy bridges a')
+t_has "дополнение: bridges auto --no-direct" "--no-direct" (compl 'torproxy bridges auto --')
+t_has "дополнение: on --strict" "--strict" (compl 'torproxy on --')
+t_has "дополнение: страны" "de" (compl 'torproxy country d')
+# справка и дополнение не должны расходиться с диспетчером
+for c in on off status leaktest circuit watch browser boot hide clean newip country exclude bridges log version help guide
+    t_has "дополнение знает команду $c" $c (compl "torproxy $c")
+end
+
+# ======================================================================
+section "Повтор запроса к сайту проверки"
+reset_state
+functions -c curl __mock_curl
+function curl
+    echo x >>$T/curl.tries
+    test (count (command cat $T/curl.tries)) -gt $MOCK_CURL_DROPS; and __mock_curl $argv
+end
+rm -f $T/curl.tries
+set -gx MOCK_CURL_DROPS 2
+t_has "два быстрых обрыва → ответ получен" "1.2.3.4" (__torproxy_check_ip)
+t_eq "… третьей попыткой" 3 (count (command cat $T/curl.tries))
+rm -f $T/curl.tries
+set -gx MOCK_CURL_DROPS 9
+__torproxy_check_ip >/dev/null
+t_eq "сайт недоступен → код 1" 1 $status
+t_eq "… попыток не больше трёх" 3 (count (command cat $T/curl.tries))
+rm -f $T/curl.tries
+function curl
+    echo x >>$T/curl.tries
+    sleep 10
+end
+__torproxy_check_ip >/dev/null
+t_eq "таймаут не повторяем" 1 (count (command cat $T/curl.tries))
+functions -e curl
+functions -c __mock_curl curl
+functions -e __mock_curl
+set -e MOCK_CURL_DROPS
+
+# ======================================================================
+section "Схема цепочки и панель"
+reset_state
+t_eq "флаг Германии" 🇩🇪 (__torproxy_flag de)
+t_eq "неизвестная страна — глобус" 🌐 (__torproxy_flag '??')
+t_eq "мини-график: масштаб по максимуму" ▁▁▄█ (__torproxy_spark 0 1 4 8)
+t_eq "мини-график: нули не делят на ноль" ▁▁▁ (__torproxy_spark 0 0 0)
+t_eq "скорость: байты" "512 Б/с" (__torproxy_rate 512)
+t_eq "скорость: килобайты" "1.5 КБ/с" (__torproxy_rate 1536)
+t_eq "скорость: мегабайты" "2.0 МБ/с" (string replace -r '^2 ' '2.0 ' (__torproxy_rate 2097152))
+t_eq "время работы" 01:02:03 (__torproxy_duration 3723)
+
+set -l fpa AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+set -l fpb BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+set -l fpc CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+set -l fpd DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD
+set -l path1 "\$$fpa~guard1,\$$fpb~middle1,\$$fpc~exit1"
+set -l path2 "\$$fpa~guard1,\$$fpb~middle1,\$$fpd~exit2"
+set -g CANNED \
+    "5 BUILT $path1 BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL" \
+    "6 BUILT $path2 BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL" \
+    "7 BUILT $path2 BUILD_FLAGS=IS_INTERNAL,NEED_CAPACITY PURPOSE=GENERAL" \
+    "8 BUILT $path2 BUILD_FLAGS=NEED_CAPACITY PURPOSE=HS_VANGUARDS" \
+    "9 LAUNCHED BUILD_FLAGS=NEED_CAPACITY PURPOSE=GENERAL" \
+    "3 SUCCEEDED 5 example.com:443"
+t_eq "служебные цепочки не считаются" 2 (count (__torproxy_circuit_usable $CANNED))
+set -l p (__torproxy_circuit_pick $CANNED)
+t_eq "выбрана цепочка с открытым соединением" $path1 $p[1]
+t_eq "… и её сайт" example.com "$p[2]"
+set -l p (__torproxy_circuit_pick $CANNED[1..2])
+t_eq "нет соединений → последняя готовая" $path2 $p[1]
+t_eq "… и сайт неизвестен" 1 (count $p)
+t_eq "только служебные → ничего" 1 (__torproxy_circuit_pick $CANNED[3..4] >/dev/null; echo $status)
+set -l p (__torproxy_circuit_pick $CANNED[1] '4 SUCCEEDED 5 ex$(am)ple;.com:443')
+t_eq "имя сайта из сети очищается" example.com "$p[2]"
+
+functions -c __torproxy_control __mock_real_control
+function __torproxy_control
+    test "$MOCK_CTL_FAIL" = 1; and return 3
+    for c in $argv
+        switch $c
+            case 'GETINFO circuit-status'
+                # одна запись приходит в строке заголовка, несколько — блоком
+                if test (count $CANNED_CIRC) -eq 1
+                    echo "250-circuit-status=$CANNED_CIRC"
+                else
+                    echo '250+circuit-status='
+                    printf '%s\n' $CANNED_CIRC . '250 OK'
+                end
+            case 'GETINFO stream-status'
+                echo "250-stream-status=$CANNED_STREAM"
+            case 'GETINFO ns/id/*'
+                set -l letter (string sub -s 15 -l 1 -- $c)
+                echo "r n x y 2026-01-01 00:00:00 10.0.0.$letter 443 0"
+            case 'GETINFO ip-to-country/10.0.0.A'
+                echo '250-ip-to-country/10.0.0.A=de'
+            case 'GETINFO ip-to-country/10.0.0.B'
+                echo '250-ip-to-country/10.0.0.B=nl'
+            case 'GETINFO ip-to-country/10.0.0.C'
+                echo '250-ip-to-country/10.0.0.C=se'
+            case 'GETINFO traffic/read'
+                echo "250-traffic/read=$MOCK_TRAFFIC"
+            case 'GETINFO traffic/written'
+                echo '250-traffic/written=1000'
+            case 'GETINFO uptime'
+                echo '250-uptime=3723'
+        end
+    end
+end
+set -g CANNED_CIRC $CANNED[1..5]
+set -g CANNED_STREAM '3 SUCCEEDED 5 example.com:443'
+set -g MOCK_TRAFFIC 5000
+echo 1 >$T/tor.state
+set -l out (torproxy circuit | nocolor)
+t_eq "circuit → код 0" 0 $pipestatus[1]
+t_has "схема: страны по порядку и сайт" "Ты ──▶ 🇩🇪 DE ──▶ 🇳🇱 NL ──▶ 🇸🇪 SE ──▶ example.com" "$out"
+t_has "схема: вход" "guard1 — видит твой IP" "$out"
+t_has "схема: выход" "exit1 — видит сайт" "$out"
+t_has "схема: разные сайты — разные цепочки" "всего: 2" "$out"
+set -g CANNED_CIRC $CANNED[1]
+t_has "схема: единственная цепочка в строке заголовка" "Ты ──▶" (torproxy circuit | nocolor)
+set -g CANNED_CIRC 
+set -g CANNED_STREAM
+torproxy circuit >/dev/null
+t_eq "цепочек нет → код 1" 1 $status
+set -g MOCK_CTL_FAIL 1
+set -l out (torproxy circuit | nocolor)
+t_eq "ControlPort не отвечает → код 1" 1 $pipestatus[1]
+t_has "ControlPort не отвечает → сообщение" "Нет связи" $out
+set -e MOCK_CTL_FAIL
+echo 0 >$T/tor.state
+torproxy circuit >/dev/null
+t_eq "Tor не запущен → код 1" 1 $status
+set -e __torproxy_cc_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE
+set -g MOCK_CTL_FAIL 1
+t_eq "сбой связи: страна неизвестна" '??' (__torproxy_hop_country EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE)
+t_eq "… и это не запоминается" 0 (set -q __torproxy_cc_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE; and echo 1; or echo 0)
+set -e MOCK_CTL_FAIL
+torproxy watch >/dev/null
+t_eq "watch: Tor не запущен → код 1" 1 $status
+
+echo 1 >$T/tor.state
+set -g CANNED_CIRC $CANNED[1..2]
+set -g CANNED_STREAM '3 SUCCEEDED 5 example.com:443'
+echo fakecookie >$T/cookie
+set -g __torproxy_cookie $T/cookie
+set -l out (torproxy watch </dev/null | nocolor)
+t_eq "watch без терминала → код 0" 0 $pipestatus[1]
+t_has "watch: один кадр, время работы" 01:02:03 "$out"
+t_has "watch: число цепочек" "Цепочек          2" "$out"
+t_has "watch: путь" "🇩🇪 DE ──▶" "$out"
+t_lacks "watch без терминала: нет управляющих последовательностей" "[?1049" "$out"
+t_eq "watch: кэш cookie не остаётся" 0 (set -q __torproxy_cookie_cache; and echo 1; or echo 0)
+
+__torproxy_watch_reset
+set -g MOCK_TRAFFIC 5000
+__torproxy_watch_update
+sleep 0.2
+set -g MOCK_TRAFFIC 105000
+__torproxy_watch_update
+t_eq "скорость считается по разнице счётчиков" 1 (test $__torproxy_w_down[-1] -gt 100000; and echo 1; or echo "$__torproxy_w_down")
+set -g MOCK_TRAFFIC 10
+__torproxy_watch_update
+t_eq "перезапуск Tor: скорость не отрицательная" 0 $__torproxy_w_down[-1]
+set -g MOCK_CTL_FAIL 1
+__torproxy_watch_update
+t_has "Tor пропал: панель пишет об этом" "нет связи" (__torproxy_watch_frame | nocolor)
+set -e MOCK_CTL_FAIL
+set -e __torproxy_cookie_cache
+functions -e __torproxy_control
+functions -c __mock_real_control __torproxy_control
+functions -e __mock_real_control
+set -e CANNED CANNED_CIRC CANNED_STREAM MOCK_TRAFFIC
+echo 0 >$T/tor.state
+
+# настоящий псевдотерминал: панель должна вернуть терминал в исходное состояние
+if command -q python3
+    for key in q ctrl-c n-then-q
+        set -l out (python3 -I $DIR/watch_pty.py $DIR/watch_child.fish $SRC $key 2>&1)
+        t_has "терминал ($key): панель открылась" "SCREEN_ON" "$out"
+        t_has "терминал ($key): кадр нарисован" "Цепочек" "$out"
+        t_has "терминал ($key): экран и курсор возвращены" "SCREEN_OFF" "$out"
+        t_has "терминал ($key): настройки stty те же" "STTY_OK" "$out"
+    end
+    set -l out (python3 -I $DIR/watch_pty.py $DIR/watch_child.fish $SRC guide 2>&1)
+    t_has "терминал: guide открывается" "Руководство пользователя" "$out"
+    t_has "терминал: подсказка less" "q — назад" "$out"
+    t_has "терминал: guide закрывается по q, настройки stty те же" "STTY_OK" "$out"
+    t_has "терминал (n): новая цепочка запрошена" "NEWNYM_SENT" (python3 -I $DIR/watch_pty.py $DIR/watch_child.fish $SRC n-then-q 2>&1)
+end
+
+# ======================================================================
+section "Приветствие"
+set -l out (__torproxy_splash | nocolor)
+t_has "приветствие: название" "T O R   P R O X Y" "$out"
+t_has "приветствие: версия" "v$__torproxy_version" "$out"
+t_has "приветствие: картинка не потеряла обратные косые" '\|/' "$out"
+t_eq "приветствие: строк картинки" 11 (__torproxy_splash | count)
+set -l widest 0
+for line in (__torproxy_splash | nocolor)
+    set -l w (string length -- $line)
+    test $w -gt $widest; and set widest $w
+end
+t_eq "приветствие помещается в окно шириной 58" 1 (test $widest -le 58; and echo 1; or echo $widest)
+set -l out (COLUMNS=40 __torproxy_splash | nocolor)
+t_lacks "узкое окно: без картинки" "весь трафик" "$out"
+t_has "узкое окно: обычный заголовок" "T O R" "$out"
+
+# ======================================================================
+section "Руководство пользователя"
+set -l out (torproxy guide)
+t_eq "guide → код 0" 0 $status
+t_lacks "guide вне терминала: без цветовых кодов" (printf '\e') "$out"
+t_lacks "guide вне терминала: разметка заголовков убрана" "# Быстрый" "$out"
+t_has "guide: версия" "torproxy $__torproxy_version" "$out"
+t_has "manual — то же самое" "Быстрый старт" (torproxy manual)
+# руководство не должно отставать от команд: сверяем с разбором аргументов в самом скрипте
+set -l commands (string match -rg '^        case ([a-z]+)\b.*$' -- (functions torproxy | string replace -r '^\s+case' '        case'))
+t_eq "список команд из диспетчера получен" 1 (test (count $commands) -ge 15; and echo 1; or echo "$commands")
+for c in $commands
+    t_has "guide описывает команду $c" "  $c" "$out"
+    test $c = help; or t_has "help описывает команду $c" "torproxy $c" (torproxy help | nocolor)
+end
+for section in "Если что-то не работает" "Что скрипт не решит" "Мосты" "Страны" "Анонимность" "Файлы" "Меню"
+    t_has "guide: раздел «$section»" $section "$out"
+end
+set -l widest 0
+for line in (torproxy guide)
+    set -l w (string length -- $line)
+    test $w -gt $widest; and set widest $w
+end
+t_eq "guide помещается в окно шириной 80" 1 (test $widest -le 80; and echo 1; or echo $widest)
+# меню и быстрый статус не должны спрашивать пароль: torrc обычно доступен без sudo
+reset_state
+printf '%s\n' '# --- torproxy transparent ---' 'ExitNodes {de}' 'ExcludeExitNodes {ru}' 'Bridge obfs4 1.2.3.4:443 AAAA' '# --- torproxy end ---' >$__torproxy_torrc
+functions -c sudo __saved_sudo
+function sudo
+    echo "$argv" >>$T/sudo.log
+    __saved_sudo $argv
+end
+rm -f $T/sudo.log
+set -l out (__torproxy_status --quick | nocolor)
+t_has "быстрый статус читает страну" " de" (string match '*Страна*' -- $out)
+t_has "быстрый статус читает мосты" "obfs4" (string match '*Мосты*' -- $out)
+t_lacks "быстрый статус: нет sudo без -n для чтения torrc" "sed" (command cat $T/sudo.log 2>/dev/null)
+chmod 000 $__torproxy_torrc
+if not test -r $__torproxy_torrc
+    __torproxy_exit_country >/dev/null 2>&1
+    t_has "torrc без доступа на чтение → через sudo" "sed" (command cat $T/sudo.log 2>/dev/null)
+end
+chmod 644 $__torproxy_torrc
+functions -e sudo
+functions -c __saved_sudo sudo
+functions -e __saved_sudo
+
+# полоса загрузки вне терминала не повторяется
+set -gx MOCK_BOOT 5
+set -l out (__torproxy_wait_bootstrap 3 now | string collect | string split \r | string match '*%')
+t_eq "вне терминала одинаковые проценты выводятся один раз" 1 (count $out)
+reset_state
 
 # ======================================================================
 section "Меню"
@@ -768,6 +1176,45 @@ r=s.recv(512); print(struct.unpack('>H',r[6:8])[0])" $__torproxy_dnsport 2>&1)
     t_has "status: по-прежнему через Tor" "✔ да" $out
     torproxy country any >/dev/null
     t_lacks "country any → ExitNodes снят" "{de}" (__torproxy_control 'GETCONF ExitNodes')
+
+    if __torproxy_has_conflux
+        torproxy country de >/dev/null
+        t_has "country de → Conflux выключен: его цепочки шли бы мимо страны" "ConfluxEnabled=0" (__torproxy_control 'GETCONF ConfluxEnabled')
+        torproxy country any >/dev/null
+        t_has "country any → Conflux снова как в сети" "ConfluxEnabled=auto" (__torproxy_control 'GETCONF ConfluxEnabled')
+    end
+    torproxy exclude de,nl >/dev/null
+    t_has "exclude → Tor принял запрет" "ExcludeExitNodes={de},{nl}" (__torproxy_control 'GETCONF ExcludeExitNodes')
+    set -l out (torproxy status | nocolor)
+    t_lacks "exclude de,nl: выход не в Германии" " DE" (string match '*Внешний IP*' -- $out)
+    t_lacks "exclude de,nl: выход не в Нидерландах" " NL" (string match '*Внешний IP*' -- $out)
+    torproxy exclude off >/dev/null
+    t_lacks "exclude off → запрет снят" "{de}" (__torproxy_control 'GETCONF ExcludeExitNodes')
+
+    curl -s --max-time 40 -o /dev/null https://check.torproject.org/api/ip
+    set -l out (torproxy circuit | nocolor)
+    t_eq "circuit с настоящим Tor → код 0" 0 $pipestatus[1]
+    t_has "circuit: путь через узлы" "──▶" "$out"
+    t_has "circuit: выход назван" "видит сайт" "$out"
+    t_eq "circuit: в пути три узла" 4 (count (string match -ra '──▶' -- "$(string match '*Ты*' -- $out)"))
+    set -l out (torproxy watch </dev/null | nocolor)
+    t_eq "watch с настоящим Tor → код 0" 0 $pipestatus[1]
+    t_has "watch: настоящий счётчик цепочек" "Цепочек" "$out"
+    t_lacks "watch: Tor на связи" "нет связи" "$out"
+
+    if command -q python3
+        set -l out (TP_CTL=$__torproxy_ctlport TP_COOKIE=$__torproxy_cookie python3 -I $DIR/watch_pty.py $DIR/watch_child.fish $SRC live 2>&1)
+        t_has "панель в терминале с настоящим Tor: путь" "──▶" "$out"
+        t_lacks "панель в терминале с настоящим Tor: связь есть" "нет связи" "$out"
+        t_eq "панель: фоновый запрос вернул IP" 1 (string match -qr 'Внешний IP\s+\S*\d+\.\d+\.\d+\.\d+' -- "$out"; and echo 1; or echo 0)
+        t_has "панель: терминал возвращён" "STTY_OK" "$out"
+        t_has "панель: экран возвращён" "SCREEN_OFF" "$out"
+    end
+
+    set -l out (torproxy bridges auto 2>&1 | nocolor)
+    t_eq "bridges auto с настоящим Tor → код 0" 0 $pipestatus[1]
+    t_has "bridges auto: сеть открыта → напрямую" "Работает: direct" $out
+    t_has "bridges auto: режим снова включён, Tor подтверждён" "✔ да" $out
 
     if command -sq lyrebird
         set -l out (torproxy bridges snowflake 2>&1 | nocolor)

@@ -19,9 +19,20 @@ function t_has --argument-names name needle
     string match -q -- "*$needle*" "$argv"; and __t_record PASS $name; or __t_record FAIL $name "нет «$needle» в «$argv»"
 end
 function istor
-    set -l r (curl -s --max-time 60 https://check.torproject.org/api/ip | jq -r '.IsTor' 2>/dev/null)
-    # не «.IsTor // …»: jq считает false пустым и подставил бы запасное значение
-    test -n "$r"; and echo $r; or echo "нет ответа"
+    # Tor иногда закрывает отдельное соединение: повторяем и печатаем причину.
+    # Утечку повтор не скроет: ответ false остаётся ответом и сразу возвращается.
+    for i in (seq 3)
+        set -l reply (curl -sS --max-time 60 https://check.torproject.org/api/ip 2>$T/curl.err)
+        set -l r (echo $reply | jq -r '.IsTor' 2>/dev/null)
+        # не «.IsTor // …»: jq считает false пустым и подставил бы запасное значение
+        if test -n "$r"
+            echo $r
+            return
+        end
+        echo "  (попытка $i: "(command cat $T/curl.err)")" >&2
+        sleep 5
+    end
+    echo "нет ответа"
 end
 
 echo "== "(torproxy version)
@@ -53,13 +64,38 @@ t_eq "newip → код 0" 0 $status
 torproxy country de
 set -l out (torproxy status)
 t_has "country de → выход в Германии" " DE" (string match '*Внешний IP*' -- $out)
+# Страна не должна «протекать»: раньше Conflux изредка уводил запросы мимо неё
+for i in (seq 5)
+    torproxy country any >/dev/null
+    torproxy newip >/dev/null
+    torproxy country de >/dev/null
+    t_has "country de, попытка $i: выход в Германии" " DE" (string match '*Внешний IP*' -- (torproxy status))
+end
 torproxy country any >/dev/null
+
+set -l out (torproxy exclude de,nl)
+t_eq "exclude → код 0" 0 $status
+for i in (seq 3)
+    set -l row (string match '*Внешний IP*' -- (torproxy status))
+    t_eq "exclude de,nl, попытка $i: выход вне этих стран" 0 (string match -qr ' (DE|NL)' -- "$row"; and echo 1; or echo 0)
+end
+torproxy exclude off >/dev/null
+
+curl -s --max-time 60 -o /dev/null https://check.torproject.org/api/ip
+t_has "circuit на настоящей системе" "──▶" (torproxy circuit)
+t_has "watch на настоящей системе: один кадр" "Цепочек" (torproxy watch </dev/null)
+t_has "guide открывается" "Быстрый старт" (torproxy guide)
+t_has "команда для других оболочек" "Страна выхода" (bash -c "'$DIR/../../bin/torproxy' status")
 
 torproxy on --strict >/dev/null
 t_eq "on --strict → код 0" 0 $status
 t_eq "строгий режим: трафик через Tor" true (istor)
 torproxy leaktest
 t_eq "строгий режим: leaktest → код 0" 0 $status
+torproxy bridges auto >/dev/null
+t_eq "bridges auto в строгом режиме → код 0" 0 $status
+t_eq "… режим остался строгим" 1 (sudo nft list table inet torproxy | grep -c torproxy-strict)
+t_eq "… трафик через Tor" true (istor)
 
 torproxy off
 t_eq "off: таблица удалена" 0 (sudo nft list tables | grep -c 'inet torproxy')
@@ -71,6 +107,14 @@ t_eq "boot on → код 0" 0 $status
 t_eq "служба включена" enabled (systemctl is-enabled torproxy-boot)
 sudo systemctl start torproxy-boot
 t_eq "служба поднимает правила" 1 (sudo nft list tables | grep -c 'inet torproxy')
+# При настоящей загрузке Tor запускает systemd, а до его старта выхода быть не должно
+curl -s --max-time 5 -o /dev/null https://check.torproject.org/api/ip
+t_eq "пока Tor не запущен, выхода нет" 1 (test $status -ne 0; and echo 1; or echo 0)
+sudo systemctl start $__torproxy_unit
+for i in (seq 120)
+    curl -s --max-time 10 -o /dev/null https://check.torproject.org/api/ip; and break
+    sleep 1
+end
 t_eq "… и трафик идёт через Tor" true (istor)
 torproxy off -y >/dev/null
 torproxy boot off

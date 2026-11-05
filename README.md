@@ -33,6 +33,9 @@ sudo pacman -S torbrowser-launcher mat2          # по желанию: Tor Brow
 git clone https://github.com/Isthsharius/torproxy.git
 mkdir -p ~/.config/fish/functions
 cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
+mkdir -p ~/.config/fish/completions
+cp torproxy/completions/torproxy.fish ~/.config/fish/completions/   # автодополнение
+sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по желанию: команда для bash и zsh
 ```
 
 **Debian, Ubuntu:**
@@ -44,6 +47,9 @@ sudo apt install torbrowser-launcher mat2        # по желанию: Tor Brow
 git clone https://github.com/Isthsharius/torproxy.git
 mkdir -p ~/.config/fish/functions
 cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
+mkdir -p ~/.config/fish/completions
+cp torproxy/completions/torproxy.fish ~/.config/fish/completions/   # автодополнение
+sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по желанию: команда для bash и zsh
 ```
 
 Откройте новый терминал, и команда `torproxy` станет доступна. Пароль sudo понадобится при каждом включении и выключении.
@@ -73,10 +79,15 @@ cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
 | `torproxy status` | режим, внешний IP, страна, проверка через check.torproject.org |
 | `torproxy newip` | новая цепочка Tor, то есть новый IP (Tor делает это не чаще раза в 10 секунд) |
 | `torproxy country de` | выход через выбранную страну, `any` — любая |
+| `torproxy circuit` | схема цепочки: через какие страны и узлы идёт трафик |
+| `torproxy watch` | живая панель: IP, скорость с мини-графиком, число цепочек, путь (`q` — выход, `n` — новый IP) |
+| `torproxy exclude ru,by` | не выходить через эти страны; `exclude off` снимает запрет |
+| `torproxy bridges auto` | подобрать рабочий способ: напрямую, obfs4, Snowflake; `--no-direct` не пробует без мостов |
 | `torproxy bridges snowflake` | мосты для сетей, где Tor заблокирован; также `obfs4`, `add` (свои), `off` |
 | `torproxy log` | журнал Tor в реальном времени |
 | `torproxy version` | версия и определившаяся платформа |
-| `torproxy help` | справка |
+| `torproxy help` | краткий список команд |
+| `torproxy guide` | руководство пользователя, доступно и из меню |
 
 **Свои мосты** обычно работают лучше встроенных. Получить их можно у бота [@GetBridgesBot](https://t.me/GetBridgesBot) в Telegram или на [bridges.torproject.org](https://bridges.torproject.org/), затем добавить командой `torproxy bridges add`. В Debian и Ubuntu поддерживаются мосты obfs4 и snowflake, а webtunnel нет: для него в стабильных версиях нет пакета.
 
@@ -117,19 +128,21 @@ cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
 - После включения перезапустите браузер и программы, открытые до этого: их старые соединения обрываются.
 - В Tor-режиме не работают UDP-сервисы: игры, звонки, QUIC, VPN, синхронизация времени (NTP).
 - Трафик Docker и виртуальных машин не перехватывается, только трафик самого компьютера.
+- При выборе или исключении стран отключается Conflux (разделение трафика по цепочкам в Tor): его цепочки не соблюдали эти настройки, и часть запросов уходила через другие страны. Скорость при этом может немного снизиться.
 - После перезагрузки режим выключен, если не включена защита при загрузке (`torproxy boot on`).
 - Встроенные мосты Snowflake подключаются в живом тесте, но работают медленно. Встроенные obfs4 тоже подключились при ручной проверке; свои мосты от @GetBridgesBot обычно работают лучше встроенных.
 
 ## Тесты
 
 ```fish
-fish tests/torproxy/run.fish            # все тесты, около минуты
+fish tests/torproxy/run.fish            # все тесты, несколько минут
 fish tests/torproxy/run.fish --offline  # без запуска настоящего Tor
 ```
 
 Тесты не трогают системный Tor, torrc и сеть:
 
 - **модульные тесты с заглушками:** torrc, страны, мосты, статус, меню, браузер, загрузка, скрытие, метаданные, обработка ошибок;
+- **панель `watch`:** настоящий псевдотерминал, клавиши и возврат настроек терминала;
 - **межсетевой экран:** настоящие правила nftables в изолированном сетевом namespace, без root, включая строгий режим и `leaktest`;
 - **живой Tor:** отдельный процесс на портах 19xxx, проверка через check.torproject.org;
 - если установлен `lyrebird`, проверяется ещё и подключение через Snowflake.
