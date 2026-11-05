@@ -222,9 +222,72 @@ onionfence boot off
 t_eq "boot off: служба удалена" 1 (systemctl cat onionfence-boot >/dev/null 2>&1; and echo 0; or echo 1)
 t_eq "после boot off — напрямую" false (istor)
 
+# Чистый запуск: настоящий домашний каталог скрыт, а след не остаётся
+sudo systemctl start $__onionfence_unit
+for i in (seq 120)
+    curl -s --max-time 10 --socks5-hostname 127.0.0.1:9050 -o /dev/null https://check.torproject.org/api/ip; and break
+    sleep 1
+end
+echo secret >$HOME/.e2e-real-file
+onionfence run --force --fresh sh -c 'test ! -e ~/.e2e-real-file' >/dev/null
+t_eq "--fresh: настоящие файлы не видны" 0 $status
+onionfence run --force --fresh sh -c 'findmnt -n -o FSTYPE ~' >$T/fresh-fs.txt
+t_has "--fresh: домашний каталог в памяти" tmpfs (command cat $T/fresh-fs.txt)
+onionfence run --force --fresh sh -c 'echo trace >~/.e2e-fresh-file; test -f ~/.e2e-fresh-file' >/dev/null
+t_eq "--fresh: программа может писать" 0 $status
+t_eq "--fresh: на настоящий диск ничего не попало" 0 (test -e $HOME/.e2e-fresh-file; and echo 1; or echo 0)
+onionfence run --force --fresh sh -c 'test "$(id -u)" != 0 && test "$PWD" = "$HOME"' >/dev/null
+t_eq "--fresh: не от root и в чистом каталоге" 0 $status
+t_eq "--fresh: файл на месте после выхода" secret (command cat $HOME/.e2e-real-file)
+for i in (seq 3)
+    set -g fresh_tor (onionfence run --force --fresh curl -s --max-time 60 https://check.torproject.org/api/ip | string match '{*' | jq -r .IsTor)
+    test "$fresh_tor" = true; and break
+    sleep 5
+end
+t_eq "--fresh: через Tor" true "$fresh_tor"
+rm -f $HOME/.e2e-real-file
+sudo systemctl stop $__onionfence_unit
+
+# Смена цепочки по таймеру
+onionfence on >/dev/null
+onionfence newip --every 30s >/dev/null
+t_eq "таймер запущен" active (systemctl is-active onionfence-rotate)
+t_has "статус показывает таймер" "каждые 30s" (onionfence status)
+sleep 36
+t_has "таймер сменил цепочку, Tor ответил" "250 OK" (sudo journalctl -u onionfence-rotate --no-pager -q)
+onionfence newip --every off >/dev/null
+t_eq "таймер снят" inactive (systemctl is-active onionfence-rotate)
+onionfence newip --every 30s >/dev/null
+
+# Экстренное отключение: полностью закрывает сеть, даже Tor, а off возвращает
+sleep 300 &
+set -l victim $last_pid
+disown
+onionfence panic add sleep >/dev/null
+onionfence panic >/dev/null
+t_eq "panic: таблица стоит" 1 (sudo nft list tables | grep -c onionfence_panic)
+t_eq "panic: Tor остановлен" inactive (systemctl is-active $__onionfence_unit)
+t_eq "panic: таймер остановлен" inactive (systemctl is-active onionfence-rotate)
+t_eq "panic: сторож остановлен" inactive (systemctl is-active onionfence-guard)
+t_eq "panic: программа из списка закрыта" 1 (kill -0 $victim 2>/dev/null; and echo 0; or echo 1)
+sudo -u $__onionfence_user curl -s --max-time 5 -o /dev/null https://1.1.1.1 2>/dev/null
+t_eq "panic: даже пользователь Tor не выходит" 1 (test $status -ne 0; and echo 1; or echo 0)
+onionfence on >/dev/null
+t_eq "panic: on отказывается" 1 $status
+onionfence panic off >/dev/null
+t_eq "panic off: запрет снят" 0 (sudo nft list tables | grep -c onionfence_panic)
+onionfence off -y >/dev/null
+t_eq "после off снова напрямую" false (istor)
+onionfence panic >/dev/null
+onionfence off -y >/dev/null
+t_eq "off снимает и экстренный запрет" 0 (sudo nft list tables | grep -c onionfence_panic)
+t_eq "… и интернет есть" false (istor)
+onionfence panic del sleep >/dev/null
+
 # Перенос со старого имени на настоящей системе: воссоздаём состояние прошлой версии
+# sed, а не string: string внутри функции не читает канал без терминала
 function __e2e_old
-    string replace -a onionfence torproxy
+    command sed s/onionfence/torproxy/g
 end
 sudo mkdir -p /etc/torproxy
 __onionfence_torrc >/dev/null

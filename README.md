@@ -46,14 +46,15 @@ sh install.sh
 | `onionfence on` / `off` | включить / выключить; `on --strict` — без доступа к локальной сети, `off -y` — без вопроса |
 | `onionfence leaktest` | проверка утечек: IP, DNS, UDP, IPv6, ICMP |
 | `onionfence doctor` | найти неполадку: программы, настройки, порты, часы |
-| `onionfence run программа` | только эта программа через Tor, остальной трафик как был; `--force`, `--stop` |
+| `onionfence run программа` | только эта программа через Tor; `--fresh` — с пустым домашним каталогом в памяти, также `--force`, `--stop` |
+| `onionfence panic` | экстренно закрыть всю сеть и программы, очистить буфер; `--wipe-history`, `off`, `add`, `del`, `list` |
 | `onionfence allow адрес` | исключения мимо Tor: адрес, сеть или интерфейс; `del`, `off`. Ослабляет защиту |
 | `onionfence browser` | Tor Browser через системный Tor |
 | `onionfence boot on` / `off` | защита с момента загрузки системы; `boot on --strict` — в строгом режиме |
 | `onionfence hide on` / `off` | случайный MAC и скрытие имени компьютера в локальной сети |
 | `onionfence clean файл` | убрать метаданные: рядом появится `файл.cleaned.расширение` |
 | `onionfence status` | режим, внешний IP, страна, проверка через check.torproject.org |
-| `onionfence newip` | новая цепочка Tor, то есть новый IP (Tor делает это не чаще раза в 10 секунд) |
+| `onionfence newip` | новая цепочка Tor, то есть новый IP (Tor делает это не чаще раза в 10 секунд); `--every 10m` — по таймеру |
 | `onionfence country de` | выход через выбранную страну, `any` — любая |
 | `onionfence circuit` | схема цепочки: через какие страны и узлы идёт трафик |
 | `onionfence watch` | живая панель: IP, скорость с мини-графиком, число цепочек, путь (`q` — выход, `n` — новый IP) |

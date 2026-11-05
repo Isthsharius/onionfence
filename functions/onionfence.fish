@@ -31,6 +31,8 @@ set -g __onionfence_old_run /run/torproxy
 set -g __onionfence_guard_interval 3
 set -g __onionfence_auto_timeout 60 # bridges auto: сколько ждать один способ
 set -g __onionfence_guard_unit onionfence-guard
+set -g __onionfence_rotate_unit onionfence-rotate
+set -g __onionfence_panic_table onionfence_panic
 set -g __onionfence_run /run/onionfence
 set -g __onionfence_run_systemd /run/systemd/system
 set -g __onionfence_dropin_root /etc/systemd/system
@@ -112,7 +114,9 @@ function onionfence --description 'Весь трафик через Tor: мен�
         case status
             __onionfence_status
         case newip
-            __onionfence_newip
+            __onionfence_newip $argv[2..]
+        case panic
+            __onionfence_panic $argv[2..]
         case country
             __onionfence_country $argv[2]
         case exclude
@@ -152,7 +156,17 @@ end
 # скрипт загружается в сессию пользователя и не должен менять её поведение.
 function __onionfence_color
     test -n "$NO_COLOR"; and return 0
-    set_color $argv
+    # единая палитра: рамки и заголовки одного цвета, зелёный, жёлтый и красный только для состояний
+    switch "$argv[1]"
+        case frame
+            set_color magenta
+        case title
+            set_color --bold magenta
+        case dim
+            set_color brblack
+        case '*'
+            set_color $argv
+    end
 end
 
 function __onionfence_say --argument-names color text
@@ -160,25 +174,41 @@ function __onionfence_say --argument-names color text
 end
 
 function __onionfence_banner
-    __onionfence_color magenta --bold
+    # внутренняя ширина 30; эмодзи занимает две клетки, поэтому строка записана вручную
+    set -l version_line (printf '%-30s' "           v$__onionfence_version")
+    __onionfence_color title
     echo '   ╭──────────────────────────────╮'
-    echo '   │     🧅  O N I O N F E N C E    │'
+    echo '   │     🧅  O N I O N F E N C E  │'
+    echo "   │$version_line│"
     echo '   ╰──────────────────────────────╯'
     __onionfence_color normal
 end
 
 # Приветствие при запуске меню. В узком окне картинка не поместится: обычный заголовок.
 function __onionfence_splash
-    # «$(…)» в кавычках: без цвета __onionfence_color пуст, а пустой список стёр бы всю строку
     if set -q COLUMNS; and test "$COLUMNS" -lt 60
         __onionfence_banner
         return
     end
+    # луковица проявляется слоями, только в настоящем терминале; отключается ONIONFENCE_NO_ANIMATION=1
+    set -l art (__onionfence_splash_art)
+    if test -t 1; and test -z "$ONIONFENCE_NO_ANIMATION" -a -z "$NO_COLOR"
+        for line in $art
+            echo $line
+            sleep 0.05
+        end
+    else
+        printf '%s\n' $art
+    end
+end
+
+function __onionfence_splash_art
+    # «$(…)» в кавычках: без цвета цветовая команда пуста, а пустой список стёр бы всю строку
     set -l stem "$(__onionfence_color 7bc96f)"
     set -l skin "$(__onionfence_color --bold c792ea)"
     set -l core "$(__onionfence_color 9d6bd6)"
     set -l name "$(__onionfence_color --bold brwhite)"
-    set -l dim "$(__onionfence_color brblack)"
+    set -l dim "$(__onionfence_color dim)"
     set -l off "$(__onionfence_color normal)"
     echo
     echo $stem'              )'$off
@@ -215,18 +245,33 @@ function __onionfence_stage --argument-names tag
     end
 end
 
+# Полоса без управляющих символов: для панели и итогов
+function __onionfence_bar_text --argument-names pct width
+    test -n "$width"; or set width 20
+    set -l n (math "floor($pct * $width / 100)")
+    printf '%s%s%s%s%s' "$(__onionfence_color frame)" "$(string repeat -n $n █)" \
+        "$(__onionfence_color dim)" "$(string repeat -n (math $width - $n) ░)" "$(__onionfence_color normal)"
+end
+
+# Итог проверки: полоса и «9 из 9»
+function __onionfence_summary --argument-names ok total
+    test $total -gt 0; or return 0
+    set -l bar (__onionfence_bar_text (math "floor($ok * 100 / $total)"))
+    echo "  $bar $ok из $total проверок в порядке"
+end
+
 function __onionfence_bar --argument-names pct stage
     set -l w 30
     set -l n (math "floor($pct * $w / 100)")
-    printf '\r  %s%s%s%s%s %3d%%' "$(__onionfence_color magenta)" "$(string repeat -n $n █)" \
-        "$(__onionfence_color brblack)" "$(string repeat -n (math $w - $n) ░)" "$(__onionfence_color normal)" $pct
+    printf '\r  %s%s%s%s%s %3d%%' "$(__onionfence_color frame)" "$(string repeat -n $n █)" \
+        "$(__onionfence_color dim)" "$(string repeat -n (math $w - $n) ░)" "$(__onionfence_color normal)" $pct
     # \e[K стирает хвост прошлой, более длинной подписи
-    test -n "$stage"; and printf '  %s%s%s\e[K' "$(__onionfence_color brblack)" $stage "$(__onionfence_color normal)"
+    test -n "$stage"; and printf '  %s%s%s\e[K' "$(__onionfence_color dim)" $stage "$(__onionfence_color normal)"
     return 0
 end
 
 function __onionfence_row --argument-names label value
-    printf '  %s│%s %-16s %s\n' "$(__onionfence_color magenta)" "$(__onionfence_color normal)" $label $value
+    printf '  %s│%s %-16s %s\n' "$(__onionfence_color frame)" "$(__onionfence_color normal)" $label $value
 end
 
 function __onionfence_help
@@ -240,13 +285,14 @@ function __onionfence_help
     echo "  $(__onionfence_color --bold)onionfence doctor$(__onionfence_color normal)          найти неполадку: зависимости, настройки, порты, часы"
     echo "  $(__onionfence_color --bold)onionfence circuit$(__onionfence_color normal)         схема цепочки: через какие страны идёт трафик"
     echo "  $(__onionfence_color --bold)onionfence watch$(__onionfence_color normal)           живая панель: IP, скорость, цепочка"
-    echo "  $(__onionfence_color --bold)onionfence run программа$(__onionfence_color normal)   только эта программа через Tor, остальной трафик как был"
+    echo "  $(__onionfence_color --bold)onionfence run программа$(__onionfence_color normal)   только эта программа через Tor; --fresh — с чистым временным домашним каталогом"
     echo "  $(__onionfence_color --bold)onionfence allow$(__onionfence_color normal)           исключения: адреса и интерфейсы мимо Tor (ослабляет защиту)"
     echo "  $(__onionfence_color --bold)onionfence browser$(__onionfence_color normal)         Tor Browser через системный Tor"
     echo "  $(__onionfence_color --bold)onionfence boot$(__onionfence_color normal)            защита с момента загрузки: on [--strict] | off"
     echo "  $(__onionfence_color --bold)onionfence hide$(__onionfence_color normal)            случайный MAC и скрытие имени компьютера: on | off"
     echo "  $(__onionfence_color --bold)onionfence clean файл$(__onionfence_color normal)      убрать метаданные из файлов (mat2)"
-    echo "  $(__onionfence_color --bold)onionfence newip$(__onionfence_color normal)           новая цепочка Tor (новый IP)"
+    echo "  $(__onionfence_color --bold)onionfence newip$(__onionfence_color normal)           новая цепочка Tor; --every 10m — менять по таймеру, off — снять"
+    echo "  $(__onionfence_color --bold)onionfence panic$(__onionfence_color normal)           экстренно закрыть сеть и программы; panic off — снять"
     echo "  $(__onionfence_color --bold)onionfence country de$(__onionfence_color normal)      страна выхода (de, nl, us…); 'any' — любая"
     echo "  $(__onionfence_color --bold)onionfence exclude ru,by$(__onionfence_color normal)   не выходить через эти страны; 'off' — снять запрет"
     echo "  $(__onionfence_color --bold)onionfence bridges$(__onionfence_color normal)         мосты: auto | snowflake | obfs4 | add | off"
@@ -584,6 +630,10 @@ function __onionfence_on
     argparse strict -- $argv; or return 1
     set -l mode
     set -q _flag_strict; and set mode strict
+    if __onionfence_panic_active
+        __onionfence_say red "✘ Сейчас действует экстренное отключение: сначала onionfence panic off"
+        return 1
+    end
     __onionfence_banner
     if test -z "$__onionfence_user"
         __onionfence_say red "✘ Tor не установлен (нет пользователя tor/debian-tor): sudo pacman -S tor или sudo apt install tor"
@@ -754,7 +804,9 @@ function __onionfence_off
         end
     end
     __onionfence_guard_stop
+    sudo systemctl stop $__onionfence_rotate_unit 2>/dev/null
     sudo systemctl daemon-reload
+    sudo nft delete table inet $__onionfence_panic_table 2>/dev/null
     sudo nft delete table inet $__onionfence_table 2>/dev/null
     sudo systemctl stop $__onionfence_unit
     resolvectl flush-caches 2>/dev/null
@@ -893,7 +945,7 @@ end
 
 # Сценарий от root: создаёт пространство, запускает программу, убирает всё после неё. Он целиком в одном
 # процессе, чтобы уборка выполнилась и после Ctrl+C: fish при Ctrl+C бросил бы остаток функции.
-# Параметры: uid gid ПЕРЕМЕННАЯ=ЗНАЧЕНИЕ… команда… (без «--»: env принял бы его за имя программы)
+# Параметры: uid gid fresh(0|1) домашний_каталог xauthority ПЕРЕМЕННАЯ=ЗНАЧЕНИЕ… команда… (без «--»: env принял бы его за имя программы)
 function __onionfence_run_script
     set -l ns $__onionfence_ns
     set -l h $__onionfence_ns_host
@@ -941,7 +993,7 @@ if [ \"\$1\" = --stop ]; then
     down
     exit 0
 fi
-uid=\$1; gid=\$2; shift 2
+uid=\$1; gid=\$2; fresh=\$3; home=\$4; xauth=\$5; shift 5
 if ! ( up ); then
     echo 'onionfence: не удалось создать сетевое пространство' >&2
     down
@@ -957,17 +1009,37 @@ ip netns exec $ns sh -c '
         echo \"nameserver $hip\" >/run/systemd/resolve/stub-resolv.conf
         echo \"nameserver $hip\" >/run/systemd/resolve/resolv.conf
     fi
-    uid=\$1; gid=\$2; shift 2
+    uid=\$1; gid=\$2; fresh=\$3; home=\$4; xauth=\$5; shift 5
+    # Чистый запуск: вместо домашнего каталога пустой каталог в памяти, он исчезнет вместе с программой
+    if [ \"\$fresh\" = 1 ]; then
+        saved=
+        if [ -n \"\$xauth\" ] && [ -r \"\$xauth\" ]; then
+            saved=\$(mktemp)
+            cp \"\$xauth\" \"\$saved\"
+        fi
+        if ! mount -t tmpfs -o mode=700,uid=\"\$uid\",gid=\"\$gid\" tmpfs \"\$home\"; then
+            echo \"onionfence: не удалось создать чистый домашний каталог\" >&2
+            exit 125
+        fi
+        if [ -n \"\$saved\" ]; then
+            case \"\$xauth\" in
+                \"\$home\"/*) install -D -o \"\$uid\" -g \"\$gid\" -m 600 \"\$saved\" \"\$xauth\" ;;
+            esac
+            rm -f \"\$saved\"
+        fi
+        install -d -o \"\$uid\" -g \"\$gid\" -m 700 \"\$home/.tmp\"
+        cd \"\$home\" || exit 125
+    fi
     exec setpriv --reuid=\"\$uid\" --regid=\"\$gid\" --init-groups env \"\$@\"
-' sh \"\$uid\" \"\$gid\" \"\$@\"
+' sh \"\$uid\" \"\$gid\" \"\$fresh\" \"\$home\" \"\$xauth\" \"\$@\"
 rc=\$?
 [ -z \"\$(ip netns pids $ns 2>/dev/null)\" ] && down
 exit \$rc"
 end
 
-# onionfence run [--force] программа [аргументы…] | onionfence run --stop
+# onionfence run [--force] [--fresh] программа [аргументы…] | onionfence run --stop
 function __onionfence_run
-    argparse -s force stop -- $argv; or return 1
+    argparse -s force stop fresh -- $argv; or return 1
     if set -q _flag_stop
         sudo sh -c (__onionfence_run_script | string collect) onionfence-run --stop
         __onionfence_say yellow "● Отдельное сетевое пространство закрыто, программы в нём завершены"
@@ -976,6 +1048,7 @@ function __onionfence_run
     if not set -q argv[1]
         echo "  onionfence run программа [аргументы]   только эта программа через Tor"
         echo "  onionfence run --force программа       запустить, даже если она уже открыта"
+        echo "  onionfence run --fresh программа       с пустым домашним каталогом в памяти: всё исчезнет после закрытия"
         echo "  onionfence run --stop                  завершить всё, что запущено так"
         return 1
     end
@@ -988,6 +1061,16 @@ function __onionfence_run
     if test -z "$(command -s -- $argv[1])"
         __onionfence_say red "✘ Программа не найдена: $argv[1]"
         return 127
+    end
+
+    set -l fresh 0
+    if set -q _flag_fresh
+        set fresh 1
+        # каталог будет закрыт пустым: программа оттуда просто не запустится
+        if string match -q "$HOME/*" -- (command -s -- $argv[1])
+            __onionfence_say red "✘ Программа лежит в домашнем каталоге, а при --fresh он скрыт: укажи другую программу"
+            return 1
+        end
     end
 
     # Браузер и многие другие программы открывают окно в уже запущенной копии, а та работает мимо Tor
@@ -1028,8 +1111,12 @@ function __onionfence_run
     for v in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS PULSE_SERVER HOME USER LOGNAME PATH LANG LC_ALL TERM
         set -q $v; and set -a envs "$v=$$v"
     end
-    sudo sh -c (__onionfence_run_script | string collect) onionfence-run (id -u) (id -g) $envs $argv
+    test $fresh = 1; and set -a envs "TMPDIR=$HOME/.tmp"
+    sudo sh -c (__onionfence_run_script | string collect) onionfence-run (id -u) (id -g) $fresh $HOME "$XAUTHORITY" $envs $argv
     set -l rc $status
+    if test $fresh = 1
+        __onionfence_say yellow "  Временный домашний каталог исчезнет, когда закроются все программы этого запуска"
+    end
 
     # Tor запускали мы и он больше никому не нужен: возвращаем как было
     if test $started_tor = 1
@@ -1284,6 +1371,7 @@ end
 
 # Одна строка отчёта leaktest; код возврата — результат проверки
 function __onionfence_leak_row --argument-names ok name detail
+    set -g __onionfence_leak_total (math $__onionfence_leak_total + 1)
     if test $ok = 1
         __onionfence_row $name "$(__onionfence_color green)✔$(__onionfence_color normal) $detail"
     else
@@ -1293,8 +1381,9 @@ function __onionfence_leak_row --argument-names ok name detail
 end
 
 function __onionfence_leaktest
+    set -g __onionfence_leak_total 0
     set -l failed 0
-    echo "$(__onionfence_color magenta)"'  ╭──────── проверка утечек ─────────'"$(__onionfence_color normal)"
+    echo "$(__onionfence_color frame)"'  ╭──────── проверка утечек ─────────'"$(__onionfence_color normal)"
 
     set -l ok 0
     sudo nft list table inet $__onionfence_table >/dev/null 2>&1; and set ok 1
@@ -1336,7 +1425,8 @@ function __onionfence_leaktest
 
     set -l allowed (__onionfence_allow_current)
     set -q allowed[1]; and __onionfence_row "Исключения" "$(__onionfence_color yellow)⚠$(__onionfence_color normal) мимо Tor идёт: "(string join ', ' -- $allowed)
-    echo "$(__onionfence_color magenta)"'  ╰──────────────────────────────────'"$(__onionfence_color normal)"
+    echo "$(__onionfence_color frame)"'  ╰──────────────────────────────────'"$(__onionfence_color normal)"
+    __onionfence_summary (math $__onionfence_leak_total - $failed) $__onionfence_leak_total
     if test $failed -eq 0
         __onionfence_say green "✔ Утечек не найдено"
     else
@@ -1388,7 +1478,25 @@ function __onionfence_status
         __onionfence_is_strict; and set rules "$(__onionfence_color green)● ВКЛЮЧЁН (строгий)$(__onionfence_color normal)"
     end
 
-    echo "$(__onionfence_color magenta)"'  ╭──────────── статус ─────────────'"$(__onionfence_color normal)"
+    # главное видно сразу, подробности ниже
+    set -l sudo_ok 0
+    sudo $sudo_opts true 2>/dev/null; and set sudo_ok 1
+    set -l headline "$(__onionfence_color --bold yellow)? Статус неизвестен: нужен пароль sudo$(__onionfence_color normal)"
+    if test $sudo_ok = 1
+        if sudo nft list table inet $__onionfence_panic_table >/dev/null 2>&1
+            set headline "$(__onionfence_color --bold red)■ СЕТЬ ЗАКРЫТА: экстренное отключение (onionfence panic off)$(__onionfence_color normal)"
+        else if sudo nft list table inet $__onionfence_table >/dev/null 2>&1
+            if systemctl -q is-active $__onionfence_unit
+                set headline "$(__onionfence_color --bold green)● ЗАЩИЩЕНО · весь трафик через Tor$(__onionfence_color normal)"
+            else
+                set headline "$(__onionfence_color --bold yellow)■ СЕТЬ ЗАКРЫТА: Tor не запущен (onionfence on или off)$(__onionfence_color normal)"
+            end
+        else
+            set headline "$(__onionfence_color --bold red)○ НЕ ЗАЩИЩЕНО · обычный интернет$(__onionfence_color normal)"
+        end
+    end
+    echo "  $headline"
+    echo "$(__onionfence_color frame)"'  ╭──────────── статус ─────────────'"$(__onionfence_color normal)"
     __onionfence_row "Режим" $rules
     __onionfence_row "Служба Tor" (systemctl is-active $__onionfence_unit)
     __onionfence_row "Страна выхода" (__onionfence_exit_country)
@@ -1397,6 +1505,8 @@ function __onionfence_status
     set -l allowed (__onionfence_allow_current)
     set -q allowed[1]; and __onionfence_row "Мимо Tor" "$(__onionfence_color yellow)"(string join ', ' -- $allowed)"$(__onionfence_color normal)"
     __onionfence_row "Мосты" (__onionfence_bridges_summary)
+    set -l rotate (__onionfence_rotate_current)
+    test -n "$rotate"; and __onionfence_row "Смена цепочки" "каждые $rotate"
     set -l boot выкл
     systemctl -q is-enabled $__onionfence_boot_unit 2>/dev/null; and set boot вкл
     __onionfence_row "При загрузке" $boot
@@ -1405,7 +1515,7 @@ function __onionfence_status
     __onionfence_row "Скрытие" $hide
 
     if test "$argv[1]" != --quick
-        __onionfence_row "Проверка" "$(__onionfence_color brblack)запрос к check.torproject.org…$(__onionfence_color normal)"
+        __onionfence_row "Проверка" "$(__onionfence_color dim)запрос к check.torproject.org…$(__onionfence_color normal)"
         set -l check (__onionfence_check_ip)
         set -l ip (echo $check | jq -r '.IP // empty' 2>/dev/null)
         if test -z "$ip"
@@ -1425,7 +1535,7 @@ function __onionfence_status
             end
         end
     end
-    echo "$(__onionfence_color magenta)"'  ╰──────────────────────────────────'"$(__onionfence_color normal)"
+    echo "$(__onionfence_color frame)"'  ╰──────────────────────────────────'"$(__onionfence_color normal)"
 end
 
 # Команды на ControlPort Tor (аутентификация cookie); печатает ответы Tor построчно
@@ -1448,6 +1558,13 @@ function __onionfence_control
 end
 
 function __onionfence_newip
+    if test "$argv[1]" = --every
+        __onionfence_rotate $argv[2]
+        return
+    else if set -q argv[1]
+        __onionfence_say red "✘ Неизвестный параметр: $argv[1] (onionfence newip --every 10m | off)"
+        return 1
+    end
     if not systemctl -q is-active $__onionfence_unit
         __onionfence_say red "✘ Tor не запущен (onionfence on)"
         return 1
@@ -1495,6 +1612,7 @@ end
 
 # Строка отчёта doctor: уровень ok | warn | fail; провалы считаются в __onionfence_doc_fails
 function __onionfence_doc_row --argument-names level name detail
+    set -g __onionfence_doc_total (math $__onionfence_doc_total + 1)
     switch $level
         case ok
             __onionfence_row $name "$(__onionfence_color green)✔$(__onionfence_color normal) $detail"
@@ -1515,9 +1633,10 @@ end
 
 function __onionfence_doctor
     set -g __onionfence_doc_fails 0
+    set -g __onionfence_doc_total 0
     set -l pm "sudo pacman -S"
     test "$__onionfence_platform" = debian; and set pm "sudo apt install"
-    echo "$(__onionfence_color magenta)"'  ╭──────── диагностика ─────────────'"$(__onionfence_color normal)"
+    echo "$(__onionfence_color frame)"'  ╭──────── диагностика ─────────────'"$(__onionfence_color normal)"
 
     # программы
     for tool in tor nft curl jq socat ss systemctl
@@ -1639,13 +1758,191 @@ function __onionfence_doctor
         test -n "$why"; and __onionfence_doc_row warn "Прошлый запуск" $why
     end
 
-    echo "$(__onionfence_color magenta)"'  ╰──────────────────────────────────'"$(__onionfence_color normal)"
+    echo "$(__onionfence_color frame)"'  ╰──────────────────────────────────'"$(__onionfence_color normal)"
+    __onionfence_summary (math $__onionfence_doc_total - $__onionfence_doc_fails) $__onionfence_doc_total
     if test $__onionfence_doc_fails -eq 0
         __onionfence_say green "✔ Неполадок не найдено"
     else
         __onionfence_say red "✘ Неполадок: $__onionfence_doc_fails"
         return 1
     end
+end
+
+# ---------- смена цепочки по таймеру ----------
+
+# «30s», «10m», «1h» в секунды. Реже суток и чаще 30 секунд не имеет смысла: Tor сам ограничивает частоту.
+function __onionfence_parse_interval --argument-names value
+    set -l m (string match -rg '^(\d{1,6})([smh])$' -- $value); or return 1
+    set -l seconds $m[1]
+    test $m[2] = m; and set seconds (math $m[1] x 60)
+    test $m[2] = h; and set seconds (math $m[1] x 3600)
+    test $seconds -ge 30 -a $seconds -le 86400; or return 1
+    echo $seconds
+end
+
+function __onionfence_rotate_script --argument-names seconds
+    echo "while sleep $seconds; do c=\$(od -An -v -tx1 $__onionfence_cookie | tr -d ' \\n'); printf 'AUTHENTICATE %s\\r\\nSIGNAL NEWNYM\\r\\nQUIT\\r\\n' \"\$c\" | socat -t2 - TCP:127.0.0.1:$__onionfence_ctlport; done"
+end
+
+# Как часто меняется цепочка: пусто, если таймер не запущен
+function __onionfence_rotate_current
+    systemctl -q is-active $__onionfence_rotate_unit; or return 0
+    systemctl show -p Description --value $__onionfence_rotate_unit | string match -rg 'every (\S+)$'
+end
+
+# onionfence newip --every 10m | off. Таймер живёт, пока работает Tor, и не переживает перезагрузку.
+function __onionfence_rotate --argument-names value
+    switch "$value"
+        case ''
+            set -l current (__onionfence_rotate_current)
+            if test -n "$current"
+                __onionfence_say green "Цепочка меняется каждые $current"
+            else
+                __onionfence_say yellow "Таймер смены цепочки не запущен"
+            end
+            echo "  onionfence newip --every 10m   менять каждые 10 минут (можно 30s, 1h)"
+            echo "  onionfence newip --every off   снять таймер"
+            return
+        case off
+            sudo systemctl stop $__onionfence_rotate_unit 2>/dev/null
+            __onionfence_say yellow "● Таймер смены цепочки снят"
+            return
+    end
+    set -l seconds (__onionfence_parse_interval $value)
+    if test -z "$seconds"
+        __onionfence_say red "✘ Нужен интервал от 30 секунд до суток: 30s, 10m, 1h"
+        return 1
+    end
+    if not systemctl -q is-active $__onionfence_unit
+        __onionfence_say red "✘ Tor не запущен (onionfence on)"
+        return 1
+    end
+    sudo systemctl stop $__onionfence_rotate_unit 2>/dev/null
+    if not sudo systemd-run --quiet --collect --unit=$__onionfence_rotate_unit \
+            --description="onionfence: new circuit every $value" \
+            -p PartOf=$__onionfence_unit.service -p After=$__onionfence_unit.service \
+            /bin/sh -c (__onionfence_rotate_script $seconds)
+        __onionfence_say red "✘ Не удалось запустить таймер"
+        return 1
+    end
+    __onionfence_say green "✔ Цепочка будет меняться каждые $value"
+    echo "  Открытые соединения не обрываются: новая цепочка действует для новых соединений."
+end
+
+# ---------- экстренное отключение ----------
+
+function __onionfence_panic_active
+    sudo -n nft list table inet $__onionfence_panic_table >/dev/null 2>&1
+end
+
+function __onionfence_panic_file
+    set -l config $HOME/.config
+    test -n "$XDG_CONFIG_HOME"; and set config $XDG_CONFIG_HOME
+    echo $config/onionfence/panic-apps
+end
+
+function __onionfence_panic_rules
+    echo "
+table inet $__onionfence_panic_table {
+    chain panic_in { type filter hook input priority -400; policy drop; iifname \"lo\" accept; }
+    chain panic_out { type filter hook output priority -400; policy drop; oifname \"lo\" accept; }
+    chain panic_fwd { type filter hook forward priority -400; policy drop; }
+}"
+end
+
+# История команд: файлы известных оболочек обнуляются. Только по явному --wipe-history: это нельзя отменить.
+# Открытые терминалы могут дописать своё при закрытии.
+function __onionfence_wipe_history
+    set -l data $HOME/.local/share
+    test -n "$XDG_DATA_HOME"; and set data $XDG_DATA_HOME
+    for f in $data/fish/fish_history $HOME/.bash_history $HOME/.zsh_history $HOME/.histfile
+        test -f $f; and true >$f
+    end
+    builtin history clear-session 2>/dev/null
+    return 0
+end
+
+# onionfence panic [--wipe-history] | off | add ИМЯ | del ИМЯ | list
+function __onionfence_panic --argument-names action name
+    set -l file (__onionfence_panic_file)
+    switch "$action"
+        case off
+            sudo nft delete table inet $__onionfence_panic_table 2>/dev/null
+            if sudo nft list table inet $__onionfence_table >/dev/null 2>&1
+                __onionfence_say yellow "● Экстренное отключение снято. Сеть пока закрыта правилами: onionfence on или onionfence off"
+            else
+                __onionfence_say green "✔ Экстренное отключение снято, обычный интернет восстановлен"
+            end
+            return
+        case list
+            if test -s $file
+                __onionfence_say yellow "При panic закрываются: "(string join ', ' -- (command cat $file))
+            else
+                echo "  Список пуст: panic закроет только программы, запущенные через onionfence run"
+            end
+            echo "  onionfence panic add firefox   добавить программу в список"
+            echo "  onionfence panic del firefox   убрать"
+            return
+        case add
+            if not string match -qr '^[A-Za-z0-9._+-]+$' -- "$name"
+                __onionfence_say red "✘ Укажи имя процесса: onionfence panic add firefox"
+                return 1
+            end
+            mkdir -p (path dirname $file); or return 1
+            test -f $file; and command grep -qxF -- $name $file; or echo $name >>$file
+            __onionfence_say green "✔ При panic будет закрываться: $name"
+            return
+        case del
+            if not test -f $file; or not command grep -qxF -- "$name" $file
+                __onionfence_say red "✘ Такой программы нет в списке: $name"
+                return 1
+            end
+            set -l left (command grep -vxF -- $name $file)
+            printf '%s\n' $left >$file
+            test -n "$left"; or true >$file
+            __onionfence_say green "✔ Убрано: $name"
+            return
+        case '' --wipe-history
+        case '*'
+            __onionfence_say red "✘ Неизвестный параметр: $action (--wipe-history | off | add | del | list)"
+            return 1
+    end
+
+    # Сначала всё, что не требует пароля: он может задержать, а эти шаги нужны сразу
+    if test -f $file
+        for app in (command cat $file)
+            pkill -KILL -x -- (string sub -l 15 -- $app) 2>/dev/null
+        end
+    end
+    type -q wl-copy; and wl-copy --clear 2>/dev/null
+    type -q xclip; and printf '' | xclip -selection clipboard 2>/dev/null
+    type -q xsel; and xsel --clipboard --clear 2>/dev/null
+    test "$action" = --wipe-history; and __onionfence_wipe_history
+
+    set -l closed 1
+    if not sudo nft list table inet $__onionfence_panic_table >/dev/null 2>&1
+        __onionfence_panic_rules | sudo nft -f -
+        __onionfence_pipefail $pipestatus; or set closed 0
+    end
+    if test $closed = 0
+        __onionfence_say red "✘ Сеть НЕ закрыта: не удалось применить правила. Отключи сеть вручную"
+        return 1
+    end
+    if command -q ip; and sudo ip netns list 2>/dev/null | string match -q "$__onionfence_ns*"
+        sudo sh -c (__onionfence_run_script | string collect) onionfence-run --stop
+    end
+    __onionfence_guard_stop
+    sudo systemctl stop $__onionfence_rotate_unit 2>/dev/null
+    sudo systemctl stop $__onionfence_unit
+    __onionfence_say red "■ ЭКСТРЕННОЕ ОТКЛЮЧЕНИЕ: сеть закрыта полностью, Tor остановлен"
+    set -l done_list "программы из списка закрыты, буфер обмена очищен"
+    test "$action" = --wipe-history; and set done_list "$done_list, история команд стёрта"
+    echo "  Сделано: $done_list."
+    echo "  Вернуть сеть: onionfence panic off. После перезагрузки этот запрет снимается сам."
+    if test "$action" != --wipe-history
+        echo "  История команд не тронута: onionfence panic --wipe-history сотрёт и её."
+    end
+    echo "  Это не стирает следы с диска: для этого нужно шифрование диска."
 end
 
 # ---------- перенос со старого названия ----------
@@ -1903,6 +2200,7 @@ onionfence направляет весь TCP-трафик и DNS компьют�
   off -y              выключить без вопроса
   status              режим, служба, страна, мосты, внешний IP
   newip               новая цепочка; Tor делает это не чаще раза в 10 секунд
+  newip --every 10m   менять цепочку по таймеру (30s, 10m, 1h); off снимает
   log                 журнал Tor в реальном времени, Ctrl+C — выход
   version             версия и определившаяся система
   help                краткий список команд
@@ -1969,6 +2267,24 @@ Tor-режим включать не нужно, а Tor запустится с�
 работает МИМО Tor. Закрой её заранее или укажи новый профиль. Файлы, DBus и
 другие локальные службы программе по-прежнему доступны. Если Ctrl+C прервал
 запуск, Tor может остаться работать: onionfence off его остановит.
+
+С параметром --fresh программа получает вместо домашнего каталога пустой каталог
+в памяти: нет кук, настроек и истории, а твои файлы ей не видны. Всё исчезает
+после закрытия, поэтому важные файлы заранее сохраняй в /tmp.
+
+  run --fresh firefox --no-remote     браузер без следов в домашнем каталоге
+
+# Экстренное отключение
+
+  panic               закрыть сеть полностью, остановить Tor, закрыть программы
+  panic --wipe-history  то же и стереть историю команд
+  panic off           вернуть сеть
+  panic add firefox   закрывать эту программу (del — убрать, list — список)
+
+Закрывает всю сеть, даже Tor, и программы из своего списка и из onionfence run,
+очищает буфер обмена. Нужен пароль sudo: программы и буфер обрабатываются ещё
+до него. После перезагрузки запрет снимается. Следы с диска команда не стирает:
+для этого нужно шифрование диска.
 
 # Исключения: мимо Tor
 
@@ -2291,11 +2607,11 @@ function __onionfence_watch_frame
     if set -q COLUMNS; and test "$COLUMNS" -lt 60
         set width 12
     end
-    echo "$(__onionfence_color magenta --bold)"'  ╭─ O N I O N F E N C E ─────'"$(__onionfence_color normal) $__onionfence_w_mode"
+    echo "$(__onionfence_color title)"'  ╭─ O N I O N F E N C E ─────'"$(__onionfence_color normal) $__onionfence_w_mode"
     if test -z "$__onionfence_w_alive"
         __onionfence_row Tor "$(__onionfence_color red)нет связи$(__onionfence_color normal) (onionfence on)"
     else
-        set -l ip "$(__onionfence_color brblack)запрос…$(__onionfence_color normal)"
+        set -l ip "$(__onionfence_color dim)запрос…$(__onionfence_color normal)"
         if test -n "$__onionfence_w_ip"
             set ip "$__onionfence_w_ip $__onionfence_w_ip_cc"
             if test "$__onionfence_w_istor" = true
@@ -2304,24 +2620,31 @@ function __onionfence_watch_frame
                 set ip "$ip  $(__onionfence_color red)✘ не через Tor$(__onionfence_color normal)"
             end
         end
+        if test -n "$__onionfence_w_progress"; and test "$__onionfence_w_progress" -lt 100
+            set -l bar (__onionfence_bar_text $__onionfence_w_progress)
+            set -l stage (__onionfence_stage "$__onionfence_w_tag")
+            __onionfence_row Подключение "$bar $__onionfence_w_progress% $stage"
+        end
         __onionfence_row "Внешний IP" $ip
         # в график идут только последние значения, сколько помещается
         set -l from (math "max(1, "(count $__onionfence_w_down)" - $width + 1)")
         set -l down_graph (__onionfence_spark $__onionfence_w_down[$from..-1])
         set -l up_graph (__onionfence_spark $__onionfence_w_up[$from..-1])
-        __onionfence_row "↓ "(__onionfence_rate $__onionfence_w_down[-1]) "$(__onionfence_color magenta)$down_graph$(__onionfence_color normal)"
-        __onionfence_row "↑ "(__onionfence_rate $__onionfence_w_up[-1]) "$(__onionfence_color cyan)$up_graph$(__onionfence_color normal)"
+        __onionfence_row "↓ "(__onionfence_rate $__onionfence_w_down[-1]) "$(__onionfence_color frame)$down_graph$(__onionfence_color normal)"
+        __onionfence_row "↑ "(__onionfence_rate $__onionfence_w_up[-1]) "$(__onionfence_color frame)$up_graph$(__onionfence_color normal)"
         __onionfence_row Цепочек "$__onionfence_w_circuits"
         __onionfence_row Работает (__onionfence_duration $__onionfence_w_uptime)
         test -n "$__onionfence_w_chain"; and __onionfence_row Путь $__onionfence_w_chain
     end
     test -n "$__onionfence_w_msg"; and __onionfence_row "" "$(__onionfence_color yellow)$__onionfence_w_msg$(__onionfence_color normal)"
-    echo "$(__onionfence_color magenta)"'  ╰─'"$(__onionfence_color normal) q — выход, n — новый IP"
+    echo "$(__onionfence_color frame)"'  ╰─'"$(__onionfence_color normal) q — выход, n — новый IP"
 end
 
 # Опрос Tor для следующего кадра
 function __onionfence_watch_update
-    set -l reply (__onionfence_control 'GETINFO traffic/read' 'GETINFO traffic/written' 'GETINFO uptime' 2>/dev/null)
+    set -l reply (__onionfence_control 'GETINFO traffic/read' 'GETINFO traffic/written' 'GETINFO uptime' 'GETINFO status/bootstrap-phase' 2>/dev/null)
+    set -g __onionfence_w_progress (string match -rg 'PROGRESS=(\d+)' -- $reply)
+    set -g __onionfence_w_tag (string match -rg 'TAG=(\w+)' -- $reply)
     set -l read (string match -rg '^250-traffic/read=(\d+)$' -- $reply)
     set -l written (string match -rg '^250-traffic/written=(\d+)$' -- $reply)
     set -l uptime (string match -rg '^250-uptime=(\d+)$' -- $reply)
@@ -2371,6 +2694,8 @@ end
 
 function __onionfence_watch_reset
     set -g __onionfence_w_alive
+    set -g __onionfence_w_progress
+    set -g __onionfence_w_tag
     set -g __onionfence_w_prev
     set -g __onionfence_w_down
     set -g __onionfence_w_up
@@ -2677,26 +3002,44 @@ function __onionfence_menu
             '🟢  Включить Tor-режим' \
             '🔒  Включить в строгом режиме (без локальной сети)' \
             '🔴  Выключить Tor-режим' \
+            '🚨  Экстренное отключение' \
+            '── Наблюдение ──' \
             '🔍  Проверить IP и страну' \
             '🛡️  Проверка утечек' \
             '🩺  Найти неполадку' \
             '🗺️  Схема цепочки' \
             '📊  Живая панель' \
+            '📜  Журнал Tor (q — назад)' \
+            '── Анонимность ──' \
             '🌐  Запустить Tor Browser' \
             '🎯  Запустить одну программу через Tor' \
+            '🧼  Чистый запуск программы' \
             '🔄  Новый IP (новая цепочка)' \
+            '⏱️  Смена цепочки по таймеру' \
             '🌍  Страна выхода' \
             '🚫  Исключить страны' \
-            '🔓  Исключения: мимо Tor' \
-            '🌉  Мосты (обход блокировок Tor)' \
             '🕵️  Скрыть устройство в локальной сети' \
-            '🚀  Защита при загрузке' \
             '🧹  Убрать метаданные из файла' \
-            '📜  Журнал Tor (q — назад)' \
+            '── Настройки ──' \
+            '🌉  Мосты (обход блокировок Tor)' \
+            '🔓  Исключения: мимо Tor' \
+            '🚀  Защита при загрузке' \
             '📖  Руководство пользователя (q — назад)' \
             '🚪  Выход' | __onionfence_pick 'действие')
 
         switch "$choice"
+            case '── *'
+                # заголовок раздела: просто показываем меню снова
+                continue
+            case '*Экстренное*'
+                __onionfence_panic
+            case '*Чистый запуск*'
+                read -P '  Команда (например, firefox --no-remote): ' -t -l cmd
+                set -q cmd[1]; and __onionfence_run --fresh (string unescape -- $cmd)
+            case '*по таймеру*'
+                __onionfence_rotate
+                read -P '  Интервал (30s, 10m, 1h), off — снять, Enter — назад: ' -l interval
+                test -n "$interval"; and __onionfence_rotate $interval
             case '*строгом*'
                 __onionfence_on --strict
             case '*Включить*'
@@ -2774,6 +3117,6 @@ function __onionfence_menu
                 return
         end
         echo
-        read -P "$(__onionfence_color brblack)"'  Enter — назад в меню'"$(__onionfence_color normal)" -l __pause
+        read -P "$(__onionfence_color dim)"'  Enter — назад в меню'"$(__onionfence_color normal)" -l __pause
     end
 end

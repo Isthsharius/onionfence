@@ -1,7 +1,7 @@
 # Автодополнение для onionfence
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-set -l commands on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall
+set -l commands on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall panic
 set -l countries de nl ch se fi no is at fr us ca gb ro
 
 complete -c onionfence -f
@@ -48,3 +48,8 @@ complete -c onionfence -n '__fish_seen_subcommand_from run' -l force -d 'Зап�
 complete -c onionfence -n '__fish_seen_subcommand_from run' -l stop -d 'Завершить запущенное так'
 complete -c onionfence -n '__fish_seen_subcommand_from run' -a '(__fish_complete_subcommand --fcs-skip=2)'
 complete -c onionfence -n '__fish_seen_subcommand_from uninstall' -s y -l yes -d 'Без вопроса'
+complete -c onionfence -n "not __fish_seen_subcommand_from $commands" -a panic -d 'Экстренно закрыть сеть и программы'
+complete -c onionfence -n '__fish_seen_subcommand_from panic' -a 'off add del list'
+complete -c onionfence -n '__fish_seen_subcommand_from panic' -l wipe-history -d 'Стереть и историю команд'
+complete -c onionfence -n '__fish_seen_subcommand_from newip' -l every -d 'Менять по таймеру: 10m, 1h, off'
+complete -c onionfence -n '__fish_seen_subcommand_from run' -l fresh -d 'Пустой домашний каталог в памяти'

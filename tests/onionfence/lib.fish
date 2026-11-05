@@ -145,6 +145,12 @@ function systemctl
             test -e $T/boot.enabled
         case "-q is-enabled $__onionfence_unit"
             test "$MOCK_TOR_ENABLED" = 1
+        case "-q is-active $__onionfence_rotate_unit"
+            test -e $T/rotate.active
+        case "show -p Description --value $__onionfence_rotate_unit"
+            command cat $T/rotate.desc 2>/dev/null
+        case "stop $__onionfence_rotate_unit"
+            rm -f $T/rotate.active
         case "-q is-active $__onionfence_guard_unit"
             test -e $T/guard.active
         case "start $__onionfence_guard_unit"
@@ -169,6 +175,27 @@ function journalctl
             echo "Tor[1]: Bootstrapped $p% (mock)"
         end
     end
+end
+
+function systemd-run
+    echo "systemd-run $argv" >>$T/calls.log
+    test "$MOCK_RUN_FAIL" = 1; and return 1
+    touch $T/rotate.active
+    string match -rg '^--description=(.*)$' -- $argv >$T/rotate.desc
+end
+
+# Тесты panic не должны закрывать настоящие программы и очищать настоящий буфер обмена
+function pkill
+    echo "pkill $argv" >>$T/calls.log
+end
+function wl-copy
+    echo "wl-copy $argv" >>$T/calls.log
+end
+function xclip
+    echo "xclip $argv" >>$T/calls.log
+end
+function xsel
+    echo "xsel $argv" >>$T/calls.log
 end
 
 function resolvectl
@@ -198,6 +225,11 @@ if test "$MOCK_NFT" = record
         if contains -- -f $argv
             command cat >$T/ruleset.nft
             test "$MOCK_NFT_FAIL" != 1
+            return
+        end
+        # экстренный запрет отдельно от обычной таблицы
+        if contains -- $__onionfence_panic_table $argv; and contains -- list $argv
+            test "$MOCK_PANIC" = 1
             return
         end
         test "$MOCK_RULES" = 1

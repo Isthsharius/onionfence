@@ -178,6 +178,19 @@ nft delete table inet onionfence_run
 ip link del $__onionfence_ns_host
 kill $child 2>/dev/null
 
+section "onionfence panic"
+__onionfence_on >/dev/null 2>&1
+__onionfence_panic_rules | nft -f -
+t_eq "правила приняты" 0 $status
+t_eq "пользователь не выходит" BLOCKED (probe user udp 1.1.1.1 443)
+t_eq "пользователь Tor не выходит" BLOCKED (probe tor tcp 1.1.1.1 443)
+t_eq "root не выходит" BLOCKED (probe root udp 1.1.1.1 443)
+t_eq "DHCP закрыт" BLOCKED (probe root dhcp 255.255.255.255 67)
+t_eq "ICMP закрыт" BLOCKED (probe_ping 1.1.1.1)
+nft delete table inet $__onionfence_panic_table
+t_eq "снято: Tor снова выходит" LEFT (probe tor tcp 1.1.1.1 443)
+__onionfence_off -y >/dev/null 2>&1
+
 section "Правила защиты при загрузке"
 set -g __onionfence_etc $T/ns-etc
 set -g __onionfence_systemd_dir $T/ns-sd

@@ -35,7 +35,7 @@ t_eq "onionfence -h → код 0" 0 $status
 set -l out (onionfence blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "onionfence newip" $out
-t_eq "в справке все 23 команд" 23 (onionfence help | nocolor | string match -r '^\s+onionfence' | count)
+t_eq "в справке все 24 команд" 24 (onionfence help | nocolor | string match -r '^\s+onionfence' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -705,7 +705,7 @@ set -l out (env TERM=dumb fish -c '
     __onionfence_bar 47; echo
     __onionfence_status --quick
     MOCK_FAIL=journalctl onionfence on' 2>&1)
-t_eq "справка: все 23 команд видны" 23 (string match -r '^\s+onionfence' -- $out | count)
+t_eq "справка: все 24 команд видны" 24 (string match -r '^\s+onionfence' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out
@@ -862,7 +862,7 @@ t_has "дополнение: bridges auto --no-direct" "--no-direct" (compl 'oni
 t_has "дополнение: on --strict" "--strict" (compl 'onionfence on --')
 t_has "дополнение: страны" "de" (compl 'onionfence country d')
 # справка и дополнение не должны расходиться с диспетчером
-for c in on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall
+for c in on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall panic
     t_has "дополнение знает команду $c" $c (compl "onionfence $c")
 end
 
@@ -1658,6 +1658,184 @@ echo x >$h5/.local/bin/torproxy
 env HOME=$h5 XDG_CONFIG_HOME=$h5/.config fish --no-config -c "source $SRC; onionfence install" >/dev/null 2>&1
 t_eq "поверх старой версии: старый код заменён" "$(__onionfence_shim_text)" "$(command cat $h5/.config/fish/functions/torproxy.fish)"
 t_eq "… старый запускатель и дополнение убраны" 0 (test -e $h5/.local/bin/torproxy -o -e $h5/.config/fish/completions/torproxy.fish; and echo 1; or echo 0)
+
+# ======================================================================
+section "Смена цепочки по таймеру"
+reset_state
+t_eq "интервал: минуты" 600 (__onionfence_parse_interval 10m)
+t_eq "интервал: часы" 3600 (__onionfence_parse_interval 1h)
+t_eq "интервал: секунды" 30 (__onionfence_parse_interval 30s)
+for bad in 5s 10 abc 2d -1m 100000m ''
+    __onionfence_parse_interval $bad >/dev/null
+    t_eq "интервал «$bad» отклонён" 1 $status
+end
+__onionfence_rotate_script 60 >$T/rotate.sh
+sh -n $T/rotate.sh
+t_eq "сценарий таймера: синтаксис" 0 $status
+t_has "сценарий: новая цепочка" "SIGNAL NEWNYM" (command cat $T/rotate.sh)
+echo 0 >$T/tor.state
+onionfence newip --every 10m >/dev/null
+t_eq "Tor выключен → код 1" 1 $status
+echo 1 >$T/tor.state
+rm -f $T/calls.log $T/rotate.active
+set -l out (onionfence newip --every 10m | nocolor)
+t_eq "таймер → код 0" 0 $pipestatus[1]
+t_has "таймер привязан к Tor" "PartOf=tor.service" (command cat $T/calls.log)
+t_has "статус показывает таймер" "каждые 10m" (__onionfence_status --quick | nocolor)
+t_has "newip --every показывает текущий" "каждые 10m" (onionfence newip --every | nocolor)
+onionfence newip --every abc >/dev/null
+t_eq "неверный интервал → код 1" 1 $status
+onionfence newip --bad >/dev/null
+t_eq "неверный параметр → код 1" 1 $status
+onionfence newip --every off >/dev/null
+t_eq "off снимает таймер" 0 (test -e $T/rotate.active; and echo 1; or echo 0)
+set -gx MOCK_RUN_FAIL 1
+onionfence newip --every 10m >/dev/null
+t_eq "таймер не запустился → код 1" 1 $status
+set -e MOCK_RUN_FAIL
+touch $T/rotate.active
+onionfence off -y >/dev/null
+t_eq "off останавливает таймер" 0 (test -e $T/rotate.active; and echo 1; or echo 0)
+echo 0 >$T/tor.state
+rm -f $T/rotate.desc
+
+# ======================================================================
+section "Экстренное отключение"
+reset_state
+# Только временный домашний каталог: --wipe-history обнуляет файлы истории, настоящие трогать нельзя
+set -l panic_home $T/panic-home
+mkdir -p $panic_home/.local/share/fish
+set -l real_home $HOME
+set -gx HOME $panic_home
+set -l saved_xdg_config $XDG_CONFIG_HOME
+set -l saved_xdg_data $XDG_DATA_HOME
+set -e XDG_CONFIG_HOME
+set -e XDG_DATA_HOME
+echo 'секрет' >$panic_home/.local/share/fish/fish_history
+echo 'секрет' >$panic_home/.bash_history
+set -g MOCK_PANIC 0
+t_has "список пуст" "пуст" (onionfence panic list | nocolor)
+onionfence panic add firefox >/dev/null
+onionfence panic add firefox >/dev/null
+onionfence panic add telegram-desktop-long >/dev/null
+t_eq "список без повторов" "firefox telegram-desktop-long" (string join ' ' (command cat (__onionfence_panic_file)))
+onionfence panic add 'a;b' >/dev/null
+t_eq "неверное имя → код 1" 1 $status
+onionfence panic del nosuch >/dev/null
+t_eq "del несуществующей → код 1" 1 $status
+onionfence panic bad >/dev/null
+t_eq "неверный параметр → код 1" 1 $status
+rm -f $T/calls.log
+echo 1 >$T/tor.state
+set -l out (onionfence panic 2>&1 | nocolor)
+t_eq "panic → код 0" 0 $pipestatus[1]
+t_has "panic сообщает" "ЭКСТРЕННОЕ ОТКЛЮЧЕНИЕ" "$out"
+t_has "закрывает программу из списка" "pkill -KILL -x -- firefox" (command cat $T/calls.log)
+t_has "имя процесса обрезано до 15 символов" "pkill -KILL -x -- telegram-deskto" (command cat $T/calls.log)
+t_has "очищает буфер обмена" "wl-copy --clear" (command cat $T/calls.log)
+t_has "закрывает всю сеть" "policy drop" (command cat $T/ruleset.nft)
+t_lacks "в правилах нет исключения для Tor" "skuid" (command cat $T/ruleset.nft)
+t_has "останавливает Tor" "systemctl stop tor" (command cat $T/calls.log)
+set -l calls (command cat $T/calls.log)
+set -l kill_at (contains -i -- "pkill -KILL -x -- firefox" $calls)
+set -l net_at (contains -i -- "nft -f -" $calls)
+t_eq "программы закрываются раньше шага, требующего пароль" 1 (test -n "$kill_at" -a -n "$net_at"; and test $kill_at -lt $net_at; and echo 1; or echo "$kill_at $net_at")
+t_eq "по умолчанию история цела" секрет (command cat $panic_home/.local/share/fish/fish_history)
+t_has "… и об этом сказано" "--wipe-history" "$out"
+onionfence panic --wipe-history >/dev/null 2>&1
+t_eq "--wipe-history стирает историю fish" 0 (count (command cat $panic_home/.local/share/fish/fish_history))
+t_eq "--wipe-history стирает историю bash" 0 (count (command cat $panic_home/.bash_history))
+set -g MOCK_PANIC 1
+t_has "статус: сеть закрыта" "СЕТЬ ЗАКРЫТА" (__onionfence_status --quick | nocolor)
+set -l out (onionfence on 2>&1 | nocolor)
+t_eq "on при запрете → код 1" 1 $pipestatus[1]
+t_has "… объяснено" "panic off" "$out"
+rm -f $T/calls.log
+onionfence panic off >/dev/null
+t_has "panic off снимает таблицу" "nft delete table inet onionfence_panic" (command cat $T/calls.log)
+rm -f $T/calls.log
+onionfence off -y >/dev/null
+t_has "off снимает и запрет" "nft delete table inet onionfence_panic" (command cat $T/calls.log)
+set -g MOCK_PANIC 0
+set -gx MOCK_NFT_FAIL 1
+set -l out (onionfence panic 2>&1 | nocolor)
+t_eq "правила не применились → код 1" 1 $pipestatus[1]
+t_has "… сказано прямо" "Сеть НЕ закрыта" "$out"
+set -e MOCK_NFT_FAIL
+set -gx HOME $real_home
+set -q saved_xdg_config[1]; and set -gx XDG_CONFIG_HOME $saved_xdg_config
+set -q saved_xdg_data[1]; and set -gx XDG_DATA_HOME $saved_xdg_data
+reset_state
+
+# ======================================================================
+section "Чистый запуск"
+reset_state
+printf '%s\n' '# user' >$__onionfence_torrc
+__onionfence_run_script >$T/run.sh
+sh -n $T/run.sh
+t_eq "сценарий: синтаксис" 0 $status
+t_has "дом закрывается каталогом в памяти" "mount -t tmpfs -o mode=700" (command cat $T/run.sh)
+functions -c sudo __saved_sudo
+function sudo
+    if test "$argv[1]" = sh
+        printf '%s\n' $argv[4..] >$T/run.args
+        return 0
+    end
+    __saved_sudo $argv
+end
+function pgrep; return 1; end
+echo 1 >$T/tor.state
+onionfence run --fresh sh -c true >/dev/null 2>&1
+t_eq "--fresh передан сценарию" "1 $HOME" (string join ' ' (command sed -n 4,5p $T/run.args))
+t_has "временные файлы тоже в чистом каталоге" "TMPDIR=$HOME/.tmp" (command cat $T/run.args)
+onionfence run sh -c true >/dev/null 2>&1
+t_eq "без --fresh домашний каталог обычный" 0 (command sed -n 4p $T/run.args)
+t_lacks "без --fresh TMPDIR не меняем" "TMPDIR=" (command cat $T/run.args)
+functions -e pgrep sudo
+functions -c __saved_sudo sudo
+functions -e __saved_sudo
+echo 0 >$T/tor.state
+reset_state
+
+# ======================================================================
+section "Внешний вид"
+reset_state
+t_has "главная строка: не защищено" "НЕ ЗАЩИЩЕНО" (__onionfence_status --quick | nocolor)
+set -gx MOCK_RULES 1
+echo 1 >$T/tor.state
+t_has "главная строка: защищено" "● ЗАЩИЩЕНО" (__onionfence_status --quick | nocolor)
+echo 0 >$T/tor.state
+t_has "главная строка: правила без Tor" "СЕТЬ ЗАКРЫТА: Tor не запущен" (__onionfence_status --quick | nocolor)
+set -gx MOCK_RULES 0
+set -gx MOCK_SUDO_CACHED 0
+t_has "главная строка: нет пароля" "нужен пароль" (__onionfence_status --quick | nocolor)
+reset_state
+set -l box (__onionfence_banner | nocolor)
+t_eq "заголовок: 4 строки" 4 (count $box)
+t_eq "заголовок: рамка ровная" 1 (test (string length -- (string replace -a 🧅 XX -- $box[2])) -eq (string length -- $box[1]); and test (string length -- $box[3]) -eq (string length -- $box[1]); and echo 1; or echo 0)
+t_has "заголовок: версия" "v$__onionfence_version" "$box"
+t_eq "итог: полоса заполнена" "████████████████████ 9 из 9 проверок в порядке" (string trim (__onionfence_summary 9 9 | nocolor))
+t_has "итог: частично" "3 из 6" (__onionfence_summary 3 6 | nocolor)
+t_eq "итог: нечего считать" 0 (count (__onionfence_summary 0 0))
+t_eq "палитра: зелёный отдельно от рамки" 1 (test "$(TERM=xterm-256color __onionfence_color frame)" != "$(TERM=xterm-256color __onionfence_color green)"; and echo 1; or echo 0)
+t_has "вне терминала приветствие без задержки" "O N I O N" (__onionfence_splash | nocolor)
+set -g __onionfence_w_alive 1
+set -g __onionfence_w_down 0
+set -g __onionfence_w_up 0
+set -g __onionfence_w_uptime 5
+set -g __onionfence_w_circuits 0
+set -g __onionfence_w_chain
+set -g __onionfence_w_mode
+set -g __onionfence_w_msg
+set -g __onionfence_w_ip
+set -g __onionfence_w_progress 25
+set -g __onionfence_w_tag handshake
+set -l out (__onionfence_watch_frame | nocolor)
+t_has "панель показывает этап подключения" "25% рукопожатие" "$out"
+set -g __onionfence_w_progress 100
+t_lacks "панель: подключён — этап скрыт" "Подключение" (__onionfence_watch_frame | nocolor)
+set -e __onionfence_w_progress
+reset_state
 
 # ======================================================================
 section "Меню"
