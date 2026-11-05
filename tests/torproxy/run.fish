@@ -1004,7 +1004,7 @@ set -g __torproxy_cookie $T/cookie
 set -l out (torproxy watch </dev/null | nocolor)
 t_eq "watch без терминала → код 0" 0 $pipestatus[1]
 t_has "watch: один кадр, время работы" 01:02:03 "$out"
-t_has "watch: число цепочек" "Цепочек          2" "$out"
+t_has "watch: число цепочек" "Цепочек 2" (string replace -ra ' +' ' ' -- "$out")
 t_has "watch: путь" "🇩🇪 DE ──▶" "$out"
 t_lacks "watch без терминала: нет управляющих последовательностей" "[?1049" "$out"
 t_eq "watch: кэш cookie не остаётся" 0 (set -q __torproxy_cookie_cache; and echo 1; or echo 0)
@@ -1041,7 +1041,8 @@ if command -q python3
     end
     set -l out (python3 -I $DIR/watch_pty.py $DIR/watch_child.fish $SRC guide 2>&1)
     t_has "терминал: guide открывается" "Руководство пользователя" "$out"
-    t_has "терминал: подсказка less" "q — назад" "$out"
+    # в минимальных системах less нет: тогда текст просто выводится
+    command -q less; and t_has "терминал: подсказка less" "q — назад" "$out"
     t_has "терминал: guide закрывается по q, настройки stty те же" "STTY_OK" "$out"
     t_has "терминал (n): новая цепочка запрошена" "NEWNYM_SENT" (python3 -I $DIR/watch_pty.py $DIR/watch_child.fish $SRC n-then-q 2>&1)
 end
