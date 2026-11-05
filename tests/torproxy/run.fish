@@ -542,8 +542,8 @@ t_has "статус: защита при загрузке вкл" "При заг
 t_has "off напоминает, что режим вернётся при загрузке" "При следующей загрузке" (torproxy off | nocolor)
 rm -f $T/boot.enabled
 t_has "статус: защита при загрузке выкл" "При загрузке выкл" (__torproxy_status --quick | nocolor | string replace -ra ' +' ' ')
-set -g __torproxy_etc /etc/torproxy
-set -g __torproxy_systemd_dir /etc/systemd/system
+set -g __torproxy_etc $T/system-etc
+set -g __torproxy_systemd_dir $T/system-sd
 
 # ======================================================================
 section "Предупреждение при выключении"
@@ -1193,8 +1193,8 @@ t_eq "boot on ставит сторожа" 1 (test -e $T/sd/torproxy-guard.servi
 t_has "boot on включает сторожа" "torproxy-guard" (string match '*systemctl enable*' -- (command cat $T/calls.log))
 torproxy boot off >/dev/null
 t_eq "boot off убирает сторожа" 0 (test -e $T/sd/torproxy-guard.service; and echo 1; or echo 0)
-set -g __torproxy_etc /etc/torproxy
-set -g __torproxy_systemd_dir /etc/systemd/system
+set -g __torproxy_etc $T/system-etc
+set -g __torproxy_systemd_dir $T/system-sd
 
 # ======================================================================
 section "Диагностика"
@@ -1352,7 +1352,7 @@ functions -e __torproxy_is_strict
 functions -c __saved_strict __torproxy_is_strict
 functions -e __saved_strict
 rm -f $T/etc/rules.nft
-set -g __torproxy_etc /etc/torproxy
+set -g __torproxy_etc $T/system-etc
 set -gx MOCK_RULES 0
 
 # ======================================================================
@@ -1507,6 +1507,68 @@ t_eq "Tor остановлен" 0 (command cat $T/tor.state)
 t_has "правила сняты" "nft delete table inet torproxy" (command cat $T/calls.log)
 set -gx HOME $oldhome
 set -e XDG_CONFIG_HOME
+reset_state
+
+# ======================================================================
+section "Служба Tor: мосты при включённых правилах и загрузка"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+set -g saved_path_dropin $PATH
+set -gx PATH $T/bin $PATH
+set -l dropin (__torproxy_tor_dropin_path)
+t_eq "путь учитывает службу" $T/dropin/tor.service.d/torproxy.conf $dropin
+torproxy country de >/dev/null
+torproxy country any >/dev/null
+t_eq "без мостов и загрузки настройки нет" 0 (test -e $dropin; and echo 1; or echo 0)
+
+rm -f $T/calls.log
+torproxy bridges snowflake >/dev/null
+t_eq "мосты → настройка службы создана" 1 (test -e $dropin; and echo 1; or echo 0)
+t_has "служба получает свой resolv.conf" "$T/tor-dns" (command cat $dropin)
+t_has "… в нём публичные DNS" "nameserver 9.9.9.9" (command cat $T/tor-dns/resolv.conf)
+t_has "… подмена каталога resolved прячет его сокет" "$T/tor-dns/resolve:/run/systemd/resolve" (__torproxy_tor_dropin_text 1 0)
+t_has "настройка применена" "systemctl daemon-reload" (command cat $T/calls.log)
+t_lacks "мостам ещё не нужно ждать сеть: это для загрузки" "network-online" (command cat $dropin)
+rm -f $T/calls.log
+torproxy country de >/dev/null
+t_lacks "без изменений службу не трогаем" "daemon-reload" (command cat $T/calls.log 2>/dev/null)
+torproxy country any >/dev/null
+
+set -g __torproxy_etc $T/etc
+set -g __torproxy_systemd_dir $T/sd
+mkdir -p $T/sd
+torproxy boot on >/dev/null
+t_has "загрузка: Tor ждёт сеть" "After=network-online.target NetworkManager-wait-online.service" (command cat $dropin)
+t_has "загрузка: и мосты остаются" "BindReadOnlyPaths" (command cat $dropin)
+torproxy bridges off >/dev/null
+t_lacks "мосты сняты: свой DNS больше не нужен" "BindReadOnlyPaths" (command cat $dropin)
+t_has "… ожидание сети осталось" "network-online" (command cat $dropin)
+torproxy boot off >/dev/null
+t_eq "boot off и без мостов → настройки нет" 0 (test -e $dropin; and echo 1; or echo 0)
+t_eq "… и каталог DNS убран" 0 (test -e $T/tor-dns/resolv.conf; and echo 1; or echo 0)
+
+# resolv.conf-ссылка внутрь каталога resolved: хватает подмены каталога
+function path
+    if test "$argv[1]" = resolve; and test "$argv[2]" = /etc/resolv.conf
+        echo /run/systemd/resolve/stub-resolv.conf
+    else
+        builtin path $argv
+    end
+end
+t_lacks "resolv.conf ведёт в resolved: отдельная подмена не нужна" ":/etc/resolv.conf" (__torproxy_tor_dropin_text 1 0)
+functions -e path
+set -g __torproxy_resolve_dir $T/nonexistent
+t_lacks "нет каталога resolved: его и не подменяем" "$T/nonexistent" (__torproxy_tor_dropin_text 1 0)
+set -g __torproxy_resolve_dir /run/systemd/resolve
+if command -q systemd-analyze
+    mkdir -p $T/verify-tor/tor.service.d
+    __torproxy_tor_dropin_text 1 1 >$T/verify-tor/tor.service.d/torproxy.conf
+    t_has "настройка: оба раздела" "[Service]" (command cat $T/verify-tor/tor.service.d/torproxy.conf)
+end
+t_has "причина: брокер не нашёлся по имени" "брокера" (__torproxy_explain 'Managed proxy "/usr/bin/lyrebird": broker failure dial tcp: lookup app.datapacket.com: Temporary failure in name resolution')
+set -g __torproxy_etc $T/system-etc
+set -g __torproxy_systemd_dir $T/system-sd
+set -gx PATH $saved_path_dropin
 reset_state
 
 # ======================================================================

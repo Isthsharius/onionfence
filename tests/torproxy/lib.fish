@@ -11,6 +11,11 @@ set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
 mkdir -p $T/run-sd
 set -g __torproxy_run $T/run
 set -g __torproxy_run_systemd $T/run-sd
+# настоящие каталоги системы тесты не должны даже читать: там может быть включена защита при загрузке
+set -g __torproxy_etc $T/system-etc
+set -g __torproxy_systemd_dir $T/system-sd
+set -g __torproxy_dropin_root $T/dropin
+set -g __torproxy_tor_dns_dir $T/tor-dns
 
 # sed, а не string: builtin string внутри функции не читает канал, если у fish нет терминала
 function nocolor

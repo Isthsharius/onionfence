@@ -17,6 +17,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y fish tor nftables jq socat curl uidmap mat2
+          sudo apt-get install -y snowflake-client || echo 'нет snowflake-client: проверка мостов при правилах будет пропущена'
           # тестам межсетевого экрана нужны непривилегированные namespace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           grep -q "^$USER:" /etc/subuid || echo "$USER:100000:65536" | sudo tee -a /etc/subuid /etc/subgid

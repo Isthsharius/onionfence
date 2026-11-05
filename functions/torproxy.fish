@@ -29,6 +29,10 @@ set -g __torproxy_auto_timeout 60 # bridges auto: сколько ждать од
 set -g __torproxy_guard_unit torproxy-guard
 set -g __torproxy_run /run/torproxy
 set -g __torproxy_run_systemd /run/systemd/system
+set -g __torproxy_dropin_root /etc/systemd/system
+set -g __torproxy_tor_dns_dir /etc/torproxy-dns
+set -g __torproxy_resolve_dir /run/systemd/resolve
+set -g __torproxy_bridge_dns 9.9.9.9 1.1.1.1 8.8.8.8
 
 # Различия дистрибутивов. Debian/Ubuntu: настоящая служба — tor@default
 # (tor.service там пустышка ExecStart=/bin/true), пользователь debian-tor,
@@ -312,6 +316,81 @@ function __torproxy_torrc
         __torproxy_say red "✘ Не удалось записать настройки в $torrc"
         return 1
     end
+    __torproxy_tor_dropin_sync
+end
+
+# ---------- настройки службы Tor ----------
+#
+# 1. Транспорту мостов нужен DNS: Snowflake ищет брокера по имени. Пока правила включены, DNS системы идёт
+#    в Tor, а Tor ждёт мост: замкнутый круг. Поэтому службе Tor даём свой resolv.conf и прячем сокет
+#    systemd-resolved, через который glibc иначе пошла бы в тот же круг. Правила выпускают пользователя Tor
+#    напрямую, а всем остальным программам DNS по-прежнему доступен только через Tor.
+# 2. При загрузке Tor не должен стартовать раньше сети: после неудачной первой попытки Snowflake
+#    долго не пробует снова.
+function __torproxy_tor_dropin_path
+    echo $__torproxy_dropin_root/$__torproxy_unit.service.d/torproxy.conf
+end
+
+function __torproxy_tor_dropin_text --argument-names bridges boot
+    if test "$boot" = 1
+        printf '%s\n' \
+            '[Unit]' \
+            'Wants=network-online.target NetworkManager-wait-online.service' \
+            'After=network-online.target NetworkManager-wait-online.service' \
+            ''
+    end
+    if test "$bridges" = 1
+        echo '[Service]'
+        # если resolv.conf ссылается внутрь каталога resolved, подмены каталога достаточно
+        if not string match -q "$__torproxy_resolve_dir/*" -- (path resolve /etc/resolv.conf)
+            echo "BindReadOnlyPaths=$__torproxy_tor_dns_dir/resolv.conf:/etc/resolv.conf"
+        end
+        test -d $__torproxy_resolve_dir; and echo "BindReadOnlyPaths=$__torproxy_tor_dns_dir/resolve:$__torproxy_resolve_dir"
+    end
+    return 0
+end
+
+function __torproxy_tor_dropin_remove
+    set -l file (__torproxy_tor_dropin_path)
+    sudo test -e $file; or return 0
+    sudo rm -f $file
+    sudo rmdir (path dirname $file) 2>/dev/null
+    sudo rm -f $__torproxy_tor_dns_dir/resolv.conf $__torproxy_tor_dns_dir/resolve/resolv.conf $__torproxy_tor_dns_dir/resolve/stub-resolv.conf
+    sudo rmdir $__torproxy_tor_dns_dir/resolve $__torproxy_tor_dns_dir 2>/dev/null
+    sudo systemctl daemon-reload
+    return 0
+end
+
+# Приводит настройки службы Tor в соответствие с мостами и защитой при загрузке
+function __torproxy_tor_dropin_sync
+    set -l bridges 0
+    test -n "$(__torproxy_bridges_current)"; and set bridges 1
+    set -l boot 0
+    test -e $__torproxy_systemd_dir/$__torproxy_boot_unit.service; and set boot 1
+    if test $bridges = 0 -a $boot = 0
+        __torproxy_tor_dropin_remove
+        return
+    end
+
+    set -l text (__torproxy_tor_dropin_text $bridges $boot | string collect)
+    set -l file (__torproxy_tor_dropin_path)
+    set -l ok 1
+    if test $bridges = 1
+        set -l dns (printf 'nameserver %s\n' $__torproxy_bridge_dns; echo 'options timeout:3 attempts:2')
+        sudo mkdir -p $__torproxy_tor_dns_dir/resolve; or set ok 0
+        printf '%s\n' $dns | sudo tee $__torproxy_tor_dns_dir/resolv.conf $__torproxy_tor_dns_dir/resolve/resolv.conf $__torproxy_tor_dns_dir/resolve/stub-resolv.conf >/dev/null
+        __torproxy_pipefail $pipestatus; or set ok 0
+    end
+    if test "$text" != "$(command cat $file 2>/dev/null | string collect)"
+        sudo mkdir -p (path dirname $file); or set ok 0
+        printf '%s\n' $text | sudo tee $file >/dev/null
+        __torproxy_pipefail $pipestatus; or set ok 0
+        sudo systemctl daemon-reload; or set ok 0
+    end
+    if test $ok = 0
+        __torproxy_say yellow "  ⚠ Не удалось настроить службу Tor: при включённых правилах мосты могут не подключиться"
+    end
+    return 0
 end
 
 # Есть ли в этой версии Tor настройка ConfluxEnabled (с 0.4.8). Старый Tor с ней не запустится.
@@ -564,6 +643,8 @@ function __torproxy_explain
         echo "порт Tor занят другой программой, какой именно, покажет torproxy doctor"
     else if string match -qir 'Permission denied|apparmor' -- $argv
         echo "Tor не хватило прав (часто это AppArmor или права на каталог данных)"
+    else if string match -qir 'broker failure.*(?:lookup|name resolution)' -- $argv
+        echo "мост не смог найти своего брокера по имени: проверь сеть или выбери другие мосты (torproxy bridges auto)"
     else if string match -qir 'Could not launch managed proxy|Managed proxy .*(?:fail|exit|terminat)|Pluggable Transport process terminated' -- $argv
         echo "не запустилась программа-транспорт для мостов"
     else if string match -qir 'clock|skew|not yet valid' -- $argv
@@ -1056,6 +1137,7 @@ function __torproxy_boot --argument-names action
                 __torproxy_say red "✘ Не удалось записать службу сторожа"
                 return 1
             end
+            __torproxy_tor_dropin_sync
             sudo systemctl daemon-reload
             sudo systemctl enable $__torproxy_boot_unit $__torproxy_unit $__torproxy_guard_unit; or begin
                 __torproxy_say red "✘ Не удалось включить службы"
@@ -1074,6 +1156,7 @@ function __torproxy_boot --argument-names action
             sudo test -e $__torproxy_etc/tor-was-enabled; or sudo systemctl disable $__torproxy_unit
             sudo rm -f $service
             sudo rm -rf $__torproxy_etc
+            __torproxy_tor_dropin_sync
             sudo systemctl daemon-reload
             __torproxy_say yellow "● Защита при загрузке выключена (текущий режим не изменён)"
         case '*'
@@ -1457,6 +1540,14 @@ function __torproxy_doctor
         end
     end
 
+    if set -q bridges[1]
+        if test -e (__torproxy_tor_dropin_path)
+            __torproxy_doc_row ok "DNS мостов" "у службы Tor свой DNS: мосты подключатся и при включённых правилах"
+        else
+            __torproxy_doc_row warn "DNS мостов" "настройки службы Tor нет: torproxy on создаст её"
+        end
+    end
+
     # настройки: Tor сам проверяет итоговый файл
     if test $tor_ready = 1
         set -l defaults
@@ -1642,6 +1733,7 @@ function __torproxy_uninstall
         sudo sed -i "/^$__torproxy_begin\$/,/^$__torproxy_end\$/d" $__torproxy_torrc
         or __torproxy_say yellow "  ⚠ Не удалось убрать блок из $__torproxy_torrc"
     end
+    __torproxy_tor_dropin_remove
 
     set -l config $HOME/.config/fish
     test -n "$XDG_CONFIG_HOME"; and set config $XDG_CONFIG_HOME/fish
@@ -1731,6 +1823,11 @@ obfs4proxy и snowflake-client в Debian и Ubuntu.
 Если нужно скрыть использование Tor от провайдера, бери --no-direct: обычный
 auto сначала пробует подключиться напрямую. Свои мосты обычно надёжнее
 встроенных.
+
+Мостам нужно найти своих посредников по имени, пока Tor ещё не подключён.
+Поэтому служба Tor спрашивает DNS напрямую у 9.9.9.9, 1.1.1.1 и 8.8.8.8.
+Так уходят только запросы самого транспорта мостов, у остальных программ
+DNS идёт через Tor.
 
 # Одна программа через Tor
 
@@ -1838,6 +1935,10 @@ hide требует NetworkManager и переподключает сеть, а 
   /etc/tor/torrc.bak-torproxy     копия файла до первого изменения
   /etc/torproxy/                  правила для запуска при загрузке
   ~/.local/state/torproxy/hide/   прежние настройки сети для hide off
+
+  /etc/systemd/system/*.service.d/torproxy.conf
+                                  настройка службы Tor для мостов и загрузки
+  /etc/torproxy-dns/              DNS для транспорта мостов
 
 Правила файрвола лежат в отдельной таблице nftables inet torproxy. torproxy off
 удаляет только её, другие правила не затрагиваются.'

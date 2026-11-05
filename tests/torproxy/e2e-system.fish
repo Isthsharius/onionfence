@@ -69,7 +69,14 @@ for i in (seq 5)
     torproxy country any >/dev/null
     torproxy newip >/dev/null
     torproxy country de >/dev/null
-    t_has "country de, попытка $i: выход в Германии" " DE" (string match '*Внешний IP*' -- (torproxy status))
+    # «нет ответа» не значит неверная страна: проверяем только ответы сайта
+    set -l row
+    for try in (seq 3)
+        set row (string match '*Внешний IP*' -- (torproxy status))
+        string match -q '*нет ответа*' -- "$row"; or break
+        sleep 5
+    end
+    t_has "country de, попытка $i: выход в Германии" " DE" "$row"
 end
 torproxy country any >/dev/null
 
@@ -175,6 +182,25 @@ t_eq "allow: сторож работает и после смены правил
 torproxy allow off >/dev/null
 t_eq "allow off: настоящего IP больше не видно" 0 (test "$(cf_ip)" = "$direct_ip"; and echo 1; or echo 0)
 torproxy off -y >/dev/null
+
+# Мосты при уже включённых правилах: у транспорта должен быть DNS мимо Tor. Без этого был замкнутый круг.
+if command -q snowflake-client
+    torproxy on >/dev/null
+    torproxy bridges snowflake >$T/sf-under-rules.txt 2>&1
+    set -l sf_rc $status
+    t_eq "мосты при включённых правилах: Tor подключился" 0 $sf_rc
+    test $sf_rc = 0; or journalctl -u $__torproxy_unit -n 40 --no-pager | cut -c1-150
+    set -l pid (systemctl show -p MainPID --value $__torproxy_unit)
+    t_has "служба Tor видит свой resolv.conf" "nameserver 9.9.9.9" (sudo nsenter -t $pid -m cat /etc/resolv.conf)
+    t_eq "сокет resolved скрыт от Tor" 0 (sudo nsenter -t $pid -m sh -c 'test -e /run/systemd/resolve/io.systemd.Resolve'; and echo 1; or echo 0)
+    t_eq "остальная система resolv.conf не меняла" 0 (grep -c 9.9.9.9 /etc/resolv.conf)
+    sudo nsenter -t $pid -m setpriv --reuid=$__torproxy_user --clear-groups getent hosts app.datapacket.com >/dev/null
+    t_eq "пользователь Tor разрешает имя брокера" 0 $status
+    t_eq "трафик системы всё равно через Tor" true (istor)
+    torproxy bridges off >/dev/null
+    t_eq "мосты сняты: настройка службы убрана" 1 (test ! -e /etc/systemd/system/$__torproxy_unit.service.d/torproxy.conf; and echo 1; or echo 0)
+    torproxy off -y >/dev/null
+end
 
 # Защита при загрузке: перезагрузить машину CI нельзя, поэтому запускаем службу вручную
 torproxy boot on
