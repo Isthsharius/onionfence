@@ -3,7 +3,7 @@
 Инструкция для тех, кто видит программу впервые. Опыт работы с терминалом почти не нужен: копируйте команды по одной.
 
 **Что нужно:**
-- компьютер с Linux: Arch и производные (CachyOS, EndeavourOS, Manjaro), Debian 13, Ubuntu 24.04 или их производные;
+- компьютер с Linux: Arch, Manjaro, Debian или Ubuntu (проверены Debian 13 и Ubuntu 24.04), а также их производные, например CachyOS;
 - права администратора: в ходе установки и работы система спросит ваш пароль.
 
 **Не подойдёт:** Windows, macOS, Android. На Fedora, openSUSE и других системах программа не проверялась и, скорее всего, не заработает: там другие имена службы и пользователя Tor.
@@ -111,7 +111,7 @@ onionfence off        # вернуть обычный интернет
 
 | Для чего | Arch и производные | Debian, Ubuntu |
 |---|---|---|
-| Мосты, если Tor заблокирован | `paru -S lyrebird-proxy` (из AUR) | `sudo apt install obfs4proxy snowflake-client` |
+| Мосты, если Tor заблокирован | `paru -S lyrebird-proxy` (из AUR), на Manjaro `pamac build lyrebird-proxy` | `sudo apt install obfs4proxy snowflake-client` |
 | `onionfence browser` | `sudo pacman -S torbrowser-launcher` | `sudo apt install torbrowser-launcher` |
 | `onionfence clean` | `sudo pacman -S mat2` | `sudo apt install mat2` |
 | `onionfence run` | `sudo pacman -S util-linux` (обычно уже есть) | `sudo apt install util-linux` (обычно уже есть) |

@@ -32,6 +32,7 @@ set -g __onionfence_guard_interval 3
 set -g __onionfence_auto_timeout 60 # bridges auto: сколько ждать один способ
 set -g __onionfence_guard_unit onionfence-guard
 set -g __onionfence_rotate_unit onionfence-rotate
+set -g __onionfence_aur_helpers paru yay pamac
 set -g __onionfence_panic_table onionfence_panic
 set -g __onionfence_run /run/onionfence
 set -g __onionfence_run_systemd /run/systemd/system
@@ -532,6 +533,18 @@ function __onionfence_pt_hint --argument-names transport
                 echo "в стабильных Debian/Ubuntu пакета для $transport нет, используйте obfs4 или snowflake"
         end
     else
+        # lyrebird в AUR: на Manjaro его обычно ставит pamac, на Arch — paru или yay
+        for helper in $__onionfence_aur_helpers
+            if type -q $helper
+                switch $helper
+                    case pamac
+                        echo "pamac build lyrebird-proxy"
+                    case '*'
+                        echo "$helper -S lyrebird-proxy"
+                end
+                return
+            end
+        end
         echo "paru -S lyrebird-proxy"
     end
 end

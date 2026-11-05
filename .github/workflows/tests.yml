@@ -29,6 +29,20 @@ jobs:
       - name: Настоящий запуск (sudo, systemd, nftables)
         run: fish tests/onionfence/e2e-system.fish
 
+  systems:
+    name: ${{ matrix.image }} — настоящий запуск с systemd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['archlinux:latest', 'manjarolinux/base:latest', 'debian:trixie']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Тесты и настоящий запуск в контейнере
+        run: sh tests/onionfence/container-e2e.sh "${{ matrix.image }}"
+
   debian:
     name: Debian 13 — тесты и конфиг Tor
     runs-on: ubuntu-24.04

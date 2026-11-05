@@ -177,7 +177,14 @@ t_eq "obfs4proxy не умеет webtunnel" "" "$(pt webtunnel)"
 t_has "Debian: подсказка для snowflake — apt" "apt install snowflake-client" (__onionfence_pt_hint snowflake)
 t_has "Debian: webtunnel — честно, что пакета нет" "пакета для webtunnel нет" (__onionfence_pt_hint webtunnel)
 set -g __onionfence_platform arch
+set -g saved_helpers $__onionfence_aur_helpers
+set -g __onionfence_aur_helpers nosuch-helper
 t_has "Arch: подсказка — lyrebird из AUR" "paru -S lyrebird-proxy" (__onionfence_pt_hint obfs4)
+function pamac; end
+set -g __onionfence_aur_helpers nosuch-helper pamac
+t_eq "Manjaro: подсказка через pamac" "pamac build lyrebird-proxy" (__onionfence_pt_hint obfs4)
+functions -e pamac
+set -g __onionfence_aur_helpers $saved_helpers
 
 # весь цикл on/off на Debian идёт через tor@default
 reset_state
@@ -271,7 +278,7 @@ if not command -sq lyrebird; and not command -sq snowflake-client
     set -l sum (md5sum <$__onionfence_torrc)
     set -l out (onionfence bridges snowflake | nocolor)
     t_eq "нет lyrebird → код 1" 1 $pipestatus[1]
-    t_has "нет lyrebird → подсказка установки" "paru -S lyrebird-proxy" $out
+    t_has "нет lyrebird → подсказка установки" "lyrebird-proxy" $out
     t_eq "нет lyrebird → torrc не изменился" $sum (md5sum <$__onionfence_torrc)
 else
     echo "  (проверка «нет lyrebird» пропущена: он установлен в системе)"
