@@ -24,46 +24,17 @@ torproxy off      # выключить, обычный интернет
 
 ## Установка
 
-**Arch Linux, CachyOS:**
-
-```fish
-sudo pacman -S fish tor nftables curl jq socat fzf
-paru -S lyrebird-proxy                           # по желанию: мосты
-sudo pacman -S torbrowser-launcher mat2          # по желанию: Tor Browser и очистка метаданных
+```sh
 git clone https://github.com/Isthsharius/torproxy.git
-mkdir -p ~/.config/fish/functions
-cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
-mkdir -p ~/.config/fish/completions
-cp torproxy/completions/torproxy.fish ~/.config/fish/completions/   # автодополнение
-sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по желанию: команда для bash и zsh
+cd torproxy
+sh install.sh
 ```
 
-**Debian, Ubuntu:**
+Установщик покажет нужные программы, спросит разрешение и поставит их. Подходят Arch, Debian, Ubuntu и их производные, оболочка может быть любой.
 
-```fish
-sudo apt install fish tor nftables curl jq socat fzf
-sudo apt install obfs4proxy snowflake-client     # по желанию: мосты
-sudo apt install torbrowser-launcher mat2        # по желанию: Tor Browser и очистка метаданных
-git clone https://github.com/Isthsharius/torproxy.git
-mkdir -p ~/.config/fish/functions
-cp torproxy/functions/torproxy.fish ~/.config/fish/functions/
-mkdir -p ~/.config/fish/completions
-cp torproxy/completions/torproxy.fish ~/.config/fish/completions/   # автодополнение
-sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по желанию: команда для bash и zsh
-```
+**Передали файл, архив или пакет?** Всё описано в [INSTALL.md](INSTALL.md): там же проверка подлинности, обновление и удаление.
 
-Откройте новый терминал, и команда `torproxy` станет доступна. Пароль sudo понадобится при каждом включении и выключении.
-
-| Пакет | Зачем |
-|---|---|
-| `fish`, `tor`, `nftables`, `sudo`, systemd | основа |
-| `curl`, `jq` | проверка IP в `status` |
-| `socat` | `newip` и смена страны через ControlPort |
-| `fzf` | меню со стрелками (без него будет нумерованный список) |
-| `lyrebird-proxy` (Arch) или `obfs4proxy` + `snowflake-client` (Debian/Ubuntu) | только для мостов |
-| `torbrowser-launcher` | только для `torproxy browser` |
-| `mat2` | только для `torproxy clean` |
-| NetworkManager | только для `torproxy hide` |
+Откройте новый терминал и проверьте: `torproxy doctor`. Пароль sudo понадобится при каждом включении и выключении.
 
 ## Команды
 
@@ -73,6 +44,8 @@ sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по же�
 | `torproxy on` / `off` | включить / выключить; `on --strict` — без доступа к локальной сети, `off -y` — без вопроса |
 | `torproxy leaktest` | проверка утечек: IP, DNS, UDP, IPv6, ICMP |
 | `torproxy doctor` | найти неполадку: программы, настройки, порты, часы |
+| `torproxy run программа` | только эта программа через Tor, остальной трафик как был; `--force`, `--stop` |
+| `torproxy allow адрес` | исключения мимо Tor: адрес, сеть или интерфейс; `del`, `off`. Ослабляет защиту |
 | `torproxy browser` | Tor Browser через системный Tor |
 | `torproxy boot on` / `off` | защита с момента загрузки системы; `boot on --strict` — в строгом режиме |
 | `torproxy hide on` / `off` | случайный MAC и скрытие имени компьютера в локальной сети |
@@ -87,6 +60,7 @@ sudo install -Dm755 torproxy/bin/torproxy /usr/local/bin/torproxy   # по же�
 | `torproxy bridges snowflake` | мосты для сетей, где Tor заблокирован; также `obfs4`, `add` (свои), `off` |
 | `torproxy log` | журнал Tor в реальном времени |
 | `torproxy version` | версия и определившаяся платформа |
+| `torproxy install` / `uninstall` | установить этот файл; удалить и вернуть настройки |
 | `torproxy help` | краткий список команд |
 | `torproxy guide` | руководство пользователя, доступно и из меню |
 

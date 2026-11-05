@@ -8,6 +8,8 @@
 # GNU General Public License версии 3 или (по вашему выбору) любой более поздней.
 # Распространяется БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ. Подробности — в файле LICENSE.
 
+# откуда загружен этот файл: нужно команде install
+set -g __torproxy_self (path resolve (status filename))
 set -g __torproxy_torrc /etc/tor/torrc
 set -g __torproxy_begin '# --- torproxy transparent ---'
 set -g __torproxy_end '# --- torproxy end ---'
@@ -16,7 +18,7 @@ set -g __torproxy_timeout 90
 set -g __torproxy_transport 9040
 set -g __torproxy_dnsport 9053 # не 5353: его занимает mDNS systemd-resolved
 set -g __torproxy_ctlport 9051
-set -g __torproxy_version 0.2.0
+set -g __torproxy_version 0.3.0
 set -g __torproxy_socksport 9050 # SocksPort по умолчанию: его не задаём, в Debian он в tor-service-defaults-torrc
 set -g __torproxy_boot_unit torproxy-boot
 set -g __torproxy_etc /etc/torproxy
@@ -75,6 +77,10 @@ function torproxy --description 'Весь трафик через Tor: меню 
             __torproxy_off $argv[2..]
         case browser
             __torproxy_browser
+        case run
+            __torproxy_run $argv[2..]
+        case allow
+            __torproxy_allow $argv[2..]
         case boot
             __torproxy_boot $argv[2..]
         case hide
@@ -107,6 +113,10 @@ function torproxy --description 'Весь трафик через Tor: меню 
             __torproxy_help
         case guide manual
             __torproxy_guide
+        case install
+            __torproxy_install
+        case uninstall
+            __torproxy_uninstall $argv[2..]
         case '*'
             __torproxy_help
             return 1
@@ -124,31 +134,38 @@ function __torproxy_pipefail
     return 0
 end
 
+# Цвет с учётом соглашения NO_COLOR (no-color.org). Своя функция, а не подмена set_color:
+# скрипт загружается в сессию пользователя и не должен менять её поведение.
+function __torproxy_color
+    test -n "$NO_COLOR"; and return 0
+    set_color $argv
+end
+
 function __torproxy_say --argument-names color text
-    echo "$(set_color $color)  $text$(set_color normal)"
+    echo "$(__torproxy_color $color)  $text$(__torproxy_color normal)"
 end
 
 function __torproxy_banner
-    set_color magenta --bold
+    __torproxy_color magenta --bold
     echo '   ╭──────────────────────────────╮'
     echo '   │      🧅  T O R   P R O X Y     │'
     echo '   ╰──────────────────────────────╯'
-    set_color normal
+    __torproxy_color normal
 end
 
 # Приветствие при запуске меню. В узком окне картинка не поместится: обычный заголовок.
 function __torproxy_splash
-    # «$(…)» в кавычках: без цвета set_color пуст, а пустой список стёр бы всю строку
+    # «$(…)» в кавычках: без цвета __torproxy_color пуст, а пустой список стёр бы всю строку
     if set -q COLUMNS; and test "$COLUMNS" -lt 58
         __torproxy_banner
         return
     end
-    set -l stem "$(set_color 7bc96f)"
-    set -l skin "$(set_color --bold c792ea)"
-    set -l core "$(set_color 9d6bd6)"
-    set -l name "$(set_color --bold brwhite)"
-    set -l dim "$(set_color brblack)"
-    set -l off "$(set_color normal)"
+    set -l stem "$(__torproxy_color 7bc96f)"
+    set -l skin "$(__torproxy_color --bold c792ea)"
+    set -l core "$(__torproxy_color 9d6bd6)"
+    set -l name "$(__torproxy_color --bold brwhite)"
+    set -l dim "$(__torproxy_color brblack)"
+    set -l off "$(__torproxy_color normal)"
     echo
     echo $stem'              )'$off
     echo $stem'             ('$off
@@ -162,39 +179,68 @@ function __torproxy_splash
     echo
 end
 
-function __torproxy_bar --argument-names pct
+# Понятное название этапа подключения по метке из журнала Tor
+function __torproxy_stage --argument-names tag
+    switch "$tag"
+        case 'conn_pt' 'conn_done_pt'
+            echo "запускаю мост"
+        case 'conn_proxy' 'conn_done_proxy' 'conn' 'conn_done'
+            echo "соединяюсь с сетью Tor"
+        case 'handshake' 'handshake_done' 'onehop_create'
+            echo "рукопожатие"
+        case 'requesting_status' 'loading_status' 'loading_keys'
+            echo "загружаю список узлов"
+        case 'requesting_descriptors' 'loading_descriptors' 'enough_dirinfo'
+            echo "загружаю данные узлов"
+        case 'ap_*'
+            echo "соединяюсь с первым узлом"
+        case 'circuit_create'
+            echo "строю цепочку"
+        case 'done'
+            echo "готово"
+    end
+end
+
+function __torproxy_bar --argument-names pct stage
     set -l w 30
     set -l n (math "floor($pct * $w / 100)")
-    printf '\r  %s%s%s%s%s %3d%%' "$(set_color magenta)" "$(string repeat -n $n █)" \
-        "$(set_color brblack)" "$(string repeat -n (math $w - $n) ░)" "$(set_color normal)" $pct
+    printf '\r  %s%s%s%s%s %3d%%' "$(__torproxy_color magenta)" "$(string repeat -n $n █)" \
+        "$(__torproxy_color brblack)" "$(string repeat -n (math $w - $n) ░)" "$(__torproxy_color normal)" $pct
+    # \e[K стирает хвост прошлой, более длинной подписи
+    test -n "$stage"; and printf '  %s%s%s\e[K' "$(__torproxy_color brblack)" $stage "$(__torproxy_color normal)"
+    return 0
 end
 
 function __torproxy_row --argument-names label value
-    printf '  %s│%s %-16s %s\n' "$(set_color magenta)" "$(set_color normal)" $label $value
+    printf '  %s│%s %-16s %s\n' "$(__torproxy_color magenta)" "$(__torproxy_color normal)" $label $value
 end
 
 function __torproxy_help
     __torproxy_banner
     echo
-    echo "  $(set_color --bold)torproxy$(set_color normal)                 интерактивное меню"
-    echo "  $(set_color --bold)torproxy on$(set_color normal)              включить: весь трафик через Tor (--strict: и без доступа к локальной сети)"
-    echo "  $(set_color --bold)torproxy off$(set_color normal)             выключить: обычный интернет (-y: без вопроса)"
-    echo "  $(set_color --bold)torproxy status$(set_color normal)          статус, внешний IP и страна"
-    echo "  $(set_color --bold)torproxy leaktest$(set_color normal)        проверка утечек: IP, DNS, UDP, IPv6, ICMP"
-    echo "  $(set_color --bold)torproxy doctor$(set_color normal)          найти неполадку: зависимости, настройки, порты, часы"
-    echo "  $(set_color --bold)torproxy circuit$(set_color normal)         схема цепочки: через какие страны идёт трафик"
-    echo "  $(set_color --bold)torproxy watch$(set_color normal)           живая панель: IP, скорость, цепочка"
-    echo "  $(set_color --bold)torproxy browser$(set_color normal)         Tor Browser через системный Tor"
-    echo "  $(set_color --bold)torproxy boot$(set_color normal)            защита с момента загрузки: on [--strict] | off"
-    echo "  $(set_color --bold)torproxy hide$(set_color normal)            случайный MAC и скрытие имени компьютера: on | off"
-    echo "  $(set_color --bold)torproxy clean файл$(set_color normal)      убрать метаданные из файлов (mat2)"
-    echo "  $(set_color --bold)torproxy newip$(set_color normal)           новая цепочка Tor (новый IP)"
-    echo "  $(set_color --bold)torproxy country de$(set_color normal)      страна выхода (de, nl, us…); 'any' — любая"
-    echo "  $(set_color --bold)torproxy exclude ru,by$(set_color normal)   не выходить через эти страны; 'off' — снять запрет"
-    echo "  $(set_color --bold)torproxy bridges$(set_color normal)         мосты: auto | snowflake | obfs4 | add | off"
-    echo "  $(set_color --bold)torproxy log$(set_color normal)             журнал Tor в реальном времени"
-    echo "  $(set_color --bold)torproxy guide$(set_color normal)           руководство пользователя"
-    echo "  $(set_color --bold)torproxy version$(set_color normal)         версия и платформа (Arch / Debian, Ubuntu)"
+    echo "  $(__torproxy_color --bold)torproxy$(__torproxy_color normal)                 интерактивное меню"
+    echo "  $(__torproxy_color --bold)torproxy on$(__torproxy_color normal)              включить: весь трафик через Tor (--strict: и без доступа к локальной сети)"
+    echo "  $(__torproxy_color --bold)torproxy off$(__torproxy_color normal)             выключить: обычный интернет (-y: без вопроса)"
+    echo "  $(__torproxy_color --bold)torproxy status$(__torproxy_color normal)          статус, внешний IP и страна"
+    echo "  $(__torproxy_color --bold)torproxy leaktest$(__torproxy_color normal)        проверка утечек: IP, DNS, UDP, IPv6, ICMP"
+    echo "  $(__torproxy_color --bold)torproxy doctor$(__torproxy_color normal)          найти неполадку: зависимости, настройки, порты, часы"
+    echo "  $(__torproxy_color --bold)torproxy circuit$(__torproxy_color normal)         схема цепочки: через какие страны идёт трафик"
+    echo "  $(__torproxy_color --bold)torproxy watch$(__torproxy_color normal)           живая панель: IP, скорость, цепочка"
+    echo "  $(__torproxy_color --bold)torproxy run программа$(__torproxy_color normal)   только эта программа через Tor, остальной трафик как был"
+    echo "  $(__torproxy_color --bold)torproxy allow$(__torproxy_color normal)           исключения: адреса и интерфейсы мимо Tor (ослабляет защиту)"
+    echo "  $(__torproxy_color --bold)torproxy browser$(__torproxy_color normal)         Tor Browser через системный Tor"
+    echo "  $(__torproxy_color --bold)torproxy boot$(__torproxy_color normal)            защита с момента загрузки: on [--strict] | off"
+    echo "  $(__torproxy_color --bold)torproxy hide$(__torproxy_color normal)            случайный MAC и скрытие имени компьютера: on | off"
+    echo "  $(__torproxy_color --bold)torproxy clean файл$(__torproxy_color normal)      убрать метаданные из файлов (mat2)"
+    echo "  $(__torproxy_color --bold)torproxy newip$(__torproxy_color normal)           новая цепочка Tor (новый IP)"
+    echo "  $(__torproxy_color --bold)torproxy country de$(__torproxy_color normal)      страна выхода (de, nl, us…); 'any' — любая"
+    echo "  $(__torproxy_color --bold)torproxy exclude ru,by$(__torproxy_color normal)   не выходить через эти страны; 'off' — снять запрет"
+    echo "  $(__torproxy_color --bold)torproxy bridges$(__torproxy_color normal)         мосты: auto | snowflake | obfs4 | add | off"
+    echo "  $(__torproxy_color --bold)torproxy log$(__torproxy_color normal)             журнал Tor в реальном времени"
+    echo "  $(__torproxy_color --bold)torproxy install$(__torproxy_color normal)         установить этот файл для текущего пользователя"
+    echo "  $(__torproxy_color --bold)torproxy uninstall$(__torproxy_color normal)       удалить программу и вернуть настройки (-y: без вопроса)"
+    echo "  $(__torproxy_color --bold)torproxy guide$(__torproxy_color normal)           руководство пользователя"
+    echo "  $(__torproxy_color --bold)torproxy version$(__torproxy_color normal)         версия и платформа (Arch / Debian, Ubuntu)"
 end
 
 # ---------- torrc ----------
@@ -203,12 +249,14 @@ end
 # чтобы исправления портов доходили до старых установок.
 # Без опций страна и мосты сохраняются; --country КОД|any, --bridge СТРОКА (можно несколько), --no-bridges.
 function __torproxy_torrc
-    argparse 'country=' 'exclude=' 'bridge=+' no-bridges -- $argv; or return 1
+    argparse 'country=' 'exclude=' 'bridge=+' no-bridges 'allow=' -- $argv; or return 1
     set -l torrc $__torproxy_torrc
     set -l country (__torproxy_exit_country)
     set -q _flag_country; and set country $_flag_country
     set -l exclude (__torproxy_exclude_current)
     set -q _flag_exclude; and set exclude (string split -n , -- $_flag_exclude)
+    set -l allow (__torproxy_allow_current)
+    set -q _flag_allow; and set allow (string split -n , -- $_flag_allow)
     set -l bridges (__torproxy_bridges_current)
     set -q _flag_no_bridges; and set bridges
     set -q _flag_bridge; and set bridges $_flag_bridge
@@ -257,6 +305,7 @@ function __torproxy_torrc
         'CookieAuthentication 1' \
         $exit_lines \
         $bridge_lines \
+        (string replace -r '^' '# torproxy-allow ' -- $allow) \
         $__torproxy_end \
         | sudo tee -a $torrc >/dev/null
     __torproxy_pipefail $pipestatus; or begin
@@ -370,6 +419,18 @@ function __torproxy_rules --argument-names mode
     set -l direct $lan
     set -l lo_rule 'oifname lo accept'
     set -l lan_rule "ip daddr $lan accept"
+    # исключения пользователя: DNS к ним всё равно идёт через Tor (правила DNS стоят раньше)
+    set -l allow_nat
+    set -l allow_filter
+    for a in (__torproxy_allow_current)
+        if string match -qr '^[0-9.]+(/\d+)?$' -- $a
+            set -a allow_nat "ip daddr $a return comment \"torproxy-allow\""
+            set -a allow_filter "ip daddr $a accept comment \"torproxy-allow\""
+        else
+            set -a allow_nat "oifname \"$a\" return comment \"torproxy-allow\""
+            set -a allow_filter "oifname \"$a\" accept comment \"torproxy-allow\""
+        end
+    end
     if test "$mode" = strict
         set direct 127.0.0.0/8
         set lo_rule 'oifname lo accept comment "torproxy-strict"'
@@ -384,6 +445,7 @@ table inet $__torproxy_table {
         meta nfproto ipv4 udp dport 53 redirect to :$__torproxy_dnsport
         meta nfproto ipv4 tcp dport 53 redirect to :$__torproxy_transport
         meta nfproto ipv4 ip daddr 10.192.0.0/10 meta l4proto tcp redirect to :$__torproxy_transport
+        $(string join \n -- $allow_nat)
         ip daddr $direct return
         meta nfproto ipv4 meta l4proto tcp redirect to :$__torproxy_transport
     }
@@ -392,6 +454,7 @@ table inet $__torproxy_table {
         meta skuid $tor_uid accept
         $lo_rule
         $lan_rule
+        $(string join \n -- $allow_filter)
         udp sport 68 udp dport 67 accept
         # established не разрешаем: соединения, открытые до включения, не должны идти мимо Tor
         # всё прочее (UDP, ICMP, IPv6) — drop, чтобы не было утечек мимо Tor
@@ -408,13 +471,18 @@ function __torproxy_wait_bootstrap --argument-names timeout started
     set -l pct 0
     set -l shown -1
     for i in (seq $timeout)
-        set -l p (sudo journalctl -u $__torproxy_unit --since "$started" --no-pager -q | string match -rg 'Bootstrapped (\d+)%' | tail -1)
+        set -l line (sudo journalctl -u $__torproxy_unit --since "$started" --no-pager -q | string match -r 'Bootstrapped \d+%.*' | tail -1)
         # string match без совпадений (Tor ещё не начал) — не ошибка, поэтому проверяем только journalctl
         test $pipestatus[1] -eq 0; or return 2
+        set -l p (string match -rg 'Bootstrapped (\d+)%' -- "$line")
         test -n "$p"; and set pct $p
+        set -l tag (string match -rg 'Bootstrapped \d+% \((\w+)\)' -- "$line")
         # вне терминала \\r не работает: каждый повтор был бы лишним мусором в журнале
         if test -t 1; or test $pct -ne $shown
-            __torproxy_bar $pct
+            # подпись только в терминале: вне его достаточно процентов
+            set -l stage
+            test -t 1; and set stage (__torproxy_stage "$tag")
+            __torproxy_bar $pct "$stage"
             set shown $pct
         end
         test $pct -eq 100; and return 0
@@ -603,6 +671,282 @@ function __torproxy_off
     if systemctl -q is-enabled $__torproxy_boot_unit 2>/dev/null
         __torproxy_say yellow "  При следующей загрузке режим включится снова (torproxy boot off — отключить)"
     end
+end
+
+# ---------- исключения ----------
+
+function __torproxy_allow_current
+    __torproxy_torrc_sed "s/^# torproxy-allow //p"
+end
+
+# IPv4-адрес или сеть, которую разумно пропускать мимо Tor. Слишком широкая сеть отключила бы защиту.
+function __torproxy_allow_valid_ip --argument-names value
+    set -l m (string match -rg '^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:/(\d+))?$' -- $value); or return 1
+    for octet in $m[1..4]
+        test $octet -le 255; or return 1
+    end
+    if set -q m[5]
+        test $m[5] -ge 8 -a $m[5] -le 32; or return 1
+    end
+    return 0
+end
+
+# Применяет изменившиеся исключения: к работающему режиму и к правилам для загрузки
+function __torproxy_allow_apply
+    if sudo nft list table inet $__torproxy_table >/dev/null 2>&1
+        set -l mode
+        __torproxy_is_strict; and set mode strict
+        __torproxy_guard_stop
+        sudo nft delete table inet $__torproxy_table 2>/dev/null
+        __torproxy_rules $mode | sudo nft -f -; or begin
+            __torproxy_say red "✘ Ошибка применения правил nftables: режим снят, включи заново (torproxy on)"
+            return 1
+        end
+        __torproxy_guard_start $mode
+    end
+    if sudo test -e $__torproxy_etc/rules.nft
+        set -l mode
+        sudo grep -q torproxy-strict $__torproxy_etc/rules.nft; and set mode strict
+        __torproxy_rules $mode | sudo tee $__torproxy_etc/rules.nft >/dev/null
+    end
+    return 0
+end
+
+# torproxy allow [АДРЕС | ИНТЕРФЕЙС | del ЗНАЧЕНИЕ | off]
+function __torproxy_allow --argument-names arg value
+    set -l current (__torproxy_allow_current)
+    switch "$arg"
+        case ''
+            if set -q current[1]
+                __torproxy_say yellow "⚠ Мимо Tor идёт: "(string join ', ' -- $current)
+            else
+                __torproxy_say green "Исключений нет: весь трафик через Tor"
+            end
+            echo "  torproxy allow 100.64.0.0/10   адрес или сеть мимо Tor"
+            echo "  torproxy allow tailscale0      сетевой интерфейс мимо Tor"
+            echo "  torproxy allow del АДРЕС       убрать одно исключение"
+            echo "  torproxy allow off             убрать все"
+            return
+        case off
+            __torproxy_torrc --allow=; or return 1
+            __torproxy_allow_apply; or return 1
+            __torproxy_say green "✔ Исключений нет: весь трафик через Tor"
+            return
+        case del
+            if not contains -- "$value" $current
+                __torproxy_say red "✘ Такого исключения нет: $value"
+                return 1
+            end
+            set -l left (string match -v -- "$value" $current)
+            __torproxy_torrc --allow="$(string join , -- $left)"; or return 1
+            __torproxy_allow_apply; or return 1
+            __torproxy_say green "✔ Убрано: $value"
+            return
+    end
+
+    if string match -qr '^[0-9.]+(/\d+)?$' -- $arg
+        if not __torproxy_allow_valid_ip $arg
+            __torproxy_say red "✘ Неверный адрес или слишком широкая сеть: $arg (нужна маска от /8 до /32)"
+            return 1
+        end
+    else if not string match -qr '^[A-Za-z][A-Za-z0-9_.-]{0,14}$' -- $arg
+        __torproxy_say red "✘ Не похоже на адрес или интерфейс: $arg"
+        return 1
+    else
+        # через этот интерфейс идёт весь интернет: исключение отключило бы защиту целиком
+        if contains -- $arg lo (ip route show default 2>/dev/null | string match -rg ' dev (\S+)')
+            __torproxy_say red "✘ Через $arg идёт весь трафик: такое исключение отключило бы защиту"
+            return 1
+        end
+        if command -q ip; and not ip link show $arg >/dev/null 2>&1
+            __torproxy_say yellow "  ⚠ Интерфейса $arg сейчас нет: исключение сработает, когда он появится"
+        end
+    end
+    if contains -- $arg $current
+        __torproxy_say yellow "Уже в исключениях: $arg"
+        return
+    end
+    __torproxy_torrc --allow="$(string join , -- $current $arg)"; or return 1
+    __torproxy_allow_apply; or return 1
+    __torproxy_say yellow "⚠ Теперь мимо Tor идёт: "(string join ', ' -- $current $arg)
+    echo "  Этот трафик идёт напрямую, с твоего настоящего IP. DNS-запросы по-прежнему через Tor."
+end
+
+# ---------- одна программа через Tor ----------
+
+set -g __torproxy_ns torproxy-run
+set -g __torproxy_ns_host tprun0
+set -g __torproxy_ns_peer tprun1
+set -g __torproxy_ns_host_ip 172.31.250.1 # не 10.192.0.0/10: эту сеть Tor использует для DNS-подмены
+set -g __torproxy_ns_peer_ip 172.31.250.2
+
+# Правила хоста для пространства программы: из него есть только путь в Tor, всё прочее отбрасывается.
+# route_localnet разрешает перенаправлять в 127.0.0.1, поэтому Tor не нужно слушать новый адрес.
+function __torproxy_run_rules
+    set -l h $__torproxy_ns_host
+    echo "
+table inet torproxy_run {
+    chain nat_pre {
+        type nat hook prerouting priority -100; policy accept;
+        iifname \"$h\" meta nfproto ipv4 udp dport 53 dnat ip to 127.0.0.1:$__torproxy_dnsport
+        iifname \"$h\" meta nfproto ipv4 tcp dport 53 dnat ip to 127.0.0.1:$__torproxy_transport
+        iifname \"$h\" meta nfproto ipv4 meta l4proto tcp dnat ip to 127.0.0.1:$__torproxy_transport
+    }
+    chain filter_pre {
+        type filter hook prerouting priority 0; policy accept;
+        iifname \"$h\" ct status dnat accept
+        iifname \"$h\" drop
+    }
+}"
+end
+
+# Сценарий от root: создаёт пространство, запускает программу, убирает всё после неё. Он целиком в одном
+# процессе, чтобы уборка выполнилась и после Ctrl+C: fish при Ctrl+C бросил бы остаток функции.
+# Параметры: uid gid ПЕРЕМЕННАЯ=ЗНАЧЕНИЕ… -- команда…
+function __torproxy_run_script
+    set -l ns $__torproxy_ns
+    set -l h $__torproxy_ns_host
+    set -l p $__torproxy_ns_peer
+    set -l hip $__torproxy_ns_host_ip
+    set -l pip $__torproxy_ns_peer_ip
+    echo "
+down() {
+    nft delete table inet torproxy_run 2>/dev/null
+    ip link del $h 2>/dev/null
+    ip netns del $ns 2>/dev/null
+    rm -f /etc/netns/$ns/resolv.conf
+    rmdir /etc/netns/$ns 2>/dev/null
+}
+up() {
+    ip netns list | grep -qw $ns && ip link show $h >/dev/null 2>&1 && return 0
+    down
+    set -e
+    ip netns add $ns
+    ip link add $h type veth peer name $p
+    ip link set $p netns $ns
+    sysctl -qw net.ipv6.conf.$h.disable_ipv6=1
+    sysctl -qw net.ipv4.conf.$h.route_localnet=1
+    sysctl -qw net.ipv4.conf.$h.rp_filter=0
+    ip addr add $hip/30 dev $h
+    ip link set $h up
+    ip netns exec $ns sysctl -qw net.ipv6.conf.all.disable_ipv6=1
+    ip -n $ns link set lo up
+    ip -n $ns addr add $pip/30 dev $p
+    ip -n $ns link set $p up
+    ip -n $ns route add default via $hip
+    nft -f - <<'RULES'
+$(__torproxy_run_rules)
+RULES
+    mkdir -p /etc/netns/$ns
+    echo 'nameserver $hip' >/etc/netns/$ns/resolv.conf
+    set +e
+}
+if [ \"\$1\" = --stop ]; then
+    pids=\$(ip netns pids $ns 2>/dev/null)
+    [ -n \"\$pids\" ] && kill \$pids 2>/dev/null
+    sleep 1
+    pids=\$(ip netns pids $ns 2>/dev/null)
+    [ -n \"\$pids\" ] && kill -9 \$pids 2>/dev/null
+    down
+    exit 0
+fi
+uid=\$1; gid=\$2; shift 2
+if ! ( up ); then
+    echo 'torproxy: не удалось создать сетевое пространство' >&2
+    down
+    exit 125
+fi
+trap : INT TERM
+ip netns exec $ns sh -c '
+    # Разрешение имён через локальные службы шло бы мимо сети пространства: прячем их сокеты
+    for d in /run/systemd/resolve /run/nscd /var/run/nscd /run/avahi-daemon; do
+        [ -d \"\$d\" ] && mount -t tmpfs tmpfs \"\$d\"
+    done
+    if [ -d /run/systemd/resolve ]; then
+        echo \"nameserver $hip\" >/run/systemd/resolve/stub-resolv.conf
+        echo \"nameserver $hip\" >/run/systemd/resolve/resolv.conf
+    fi
+    uid=\$1; gid=\$2; shift 2
+    exec setpriv --reuid=\"\$uid\" --regid=\"\$gid\" --init-groups env \"\$@\"
+' sh \"\$uid\" \"\$gid\" \"\$@\"
+rc=\$?
+[ -z \"\$(ip netns pids $ns 2>/dev/null)\" ] && down
+exit \$rc"
+end
+
+# torproxy run [--force] программа [аргументы…] | torproxy run --stop
+function __torproxy_run
+    argparse -s force stop -- $argv; or return 1
+    if set -q _flag_stop
+        sudo sh -c (__torproxy_run_script | string collect) torproxy-run --stop
+        __torproxy_say yellow "● Отдельное сетевое пространство закрыто, программы в нём завершены"
+        return
+    end
+    if not set -q argv[1]
+        echo "  torproxy run программа [аргументы]   только эта программа через Tor"
+        echo "  torproxy run --force программа       запустить, даже если она уже открыта"
+        echo "  torproxy run --stop                  завершить всё, что запущено так"
+        return 1
+    end
+    for tool in ip setpriv nft
+        if not command -q $tool
+            __torproxy_say red "✘ Нужна программа $tool"
+            return 1
+        end
+    end
+    if test -z "$(command -s -- $argv[1])"
+        __torproxy_say red "✘ Программа не найдена: $argv[1]"
+        return 127
+    end
+
+    # Браузер и многие другие программы открывают окно в уже запущенной копии, а та работает мимо Tor
+    set -l name (path basename -- $argv[1] | string sub -l 15)
+    if not set -q _flag_force; and pgrep -xu (id -u) -- $name >/dev/null 2>&1
+        __torproxy_say yellow "⚠ $name уже запущен. Новое окно может открыться в старой копии, а она работает МИМО Tor."
+        if not test -t 0
+            echo "  Закрой её или запусти с --force, если уверен, что программа создаст новую копию."
+            return 1
+        end
+        read -P '  Запустить всё равно? [y/N] ' -l answer
+        string match -qri '^[yд]' -- "$answer"; or return 1
+    end
+
+    # Tor нужен, но правила всей системы не включаем: в этом и смысл команды
+    set -l started_tor 0
+    if not systemctl -q is-active $__torproxy_unit
+        __torproxy_torrc; or return 1
+        echo "  Подключение к сети Tor..."
+        set -l started (date '+%Y-%m-%d %H:%M:%S')
+        sudo systemctl restart $__torproxy_unit; or begin
+            __torproxy_on_failed "Tor не запустился" $started
+            return 1
+        end
+        set -l timeout $__torproxy_timeout
+        test -n "$(__torproxy_bridges_current)"; and set timeout (math $timeout x 2)
+        __torproxy_wait_bootstrap $timeout $started
+        set -l rc $status
+        echo
+        if test $rc -ne 0
+            __torproxy_on_failed "Tor не подключился за $timeout секунд" $started
+            return 1
+        end
+        set started_tor 1
+    end
+
+    set -l envs
+    for v in DISPLAY WAYLAND_DISPLAY XAUTHORITY XDG_RUNTIME_DIR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS PULSE_SERVER HOME USER LOGNAME PATH LANG LC_ALL TERM
+        set -q $v; and set -a envs "$v=$$v"
+    end
+    sudo sh -c (__torproxy_run_script | string collect) torproxy-run (id -u) (id -g) $envs -- $argv
+    set -l rc $status
+
+    # Tor запускали мы и он больше никому не нужен: возвращаем как было
+    if test $started_tor = 1
+        if not sudo nft list table inet $__torproxy_table >/dev/null 2>&1; and not sudo ip netns pids $__torproxy_ns >/dev/null 2>&1
+            sudo systemctl stop $__torproxy_unit
+        end
+    end
+    return $rc
 end
 
 # ---------- анонимность ----------
@@ -848,16 +1192,16 @@ end
 # Одна строка отчёта leaktest; код возврата — результат проверки
 function __torproxy_leak_row --argument-names ok name detail
     if test $ok = 1
-        __torproxy_row $name "$(set_color green)✔$(set_color normal) $detail"
+        __torproxy_row $name "$(__torproxy_color green)✔$(__torproxy_color normal) $detail"
     else
-        __torproxy_row $name "$(set_color red)✘$(set_color normal) $detail"
+        __torproxy_row $name "$(__torproxy_color red)✘$(__torproxy_color normal) $detail"
         return 1
     end
 end
 
 function __torproxy_leaktest
     set -l failed 0
-    echo "$(set_color magenta)"'  ╭──────── проверка утечек ─────────'"$(set_color normal)"
+    echo "$(__torproxy_color magenta)"'  ╭──────── проверка утечек ─────────'"$(__torproxy_color normal)"
 
     set -l ok 0
     sudo nft list table inet $__torproxy_table >/dev/null 2>&1; and set ok 1
@@ -897,7 +1241,9 @@ function __torproxy_leaktest
         __torproxy_leak_row $ok "ICMP" "ping мимо Tor не выходит"; or set failed (math $failed + 1)
     end
 
-    echo "$(set_color magenta)"'  ╰──────────────────────────────────'"$(set_color normal)"
+    set -l allowed (__torproxy_allow_current)
+    set -q allowed[1]; and __torproxy_row "Исключения" "$(__torproxy_color yellow)⚠$(__torproxy_color normal) мимо Tor идёт: "(string join ', ' -- $allowed)
+    echo "$(__torproxy_color magenta)"'  ╰──────────────────────────────────'"$(__torproxy_color normal)"
     if test $failed -eq 0
         __torproxy_say green "✔ Утечек не найдено"
     else
@@ -941,20 +1287,22 @@ function __torproxy_status
     # в быстром режиме не спрашиваем пароль, только используем закэшированный sudo
     set -l sudo_opts
     test "$argv[1]" = --quick; and set sudo_opts -n
-    set -l rules "$(set_color red)● выключен$(set_color normal)"
+    set -l rules "$(__torproxy_color red)● выключен$(__torproxy_color normal)"
     if not sudo $sudo_opts true 2>/dev/null
-        set rules "$(set_color yellow)? нужен sudo (выбери «Проверить»)$(set_color normal)"
+        set rules "$(__torproxy_color yellow)? нужен sudo (выбери «Проверить»)$(__torproxy_color normal)"
     else if sudo nft list table inet $__torproxy_table >/dev/null 2>&1
-        set rules "$(set_color green)● ВКЛЮЧЁН$(set_color normal)"
-        __torproxy_is_strict; and set rules "$(set_color green)● ВКЛЮЧЁН (строгий)$(set_color normal)"
+        set rules "$(__torproxy_color green)● ВКЛЮЧЁН$(__torproxy_color normal)"
+        __torproxy_is_strict; and set rules "$(__torproxy_color green)● ВКЛЮЧЁН (строгий)$(__torproxy_color normal)"
     end
 
-    echo "$(set_color magenta)"'  ╭──────────── статус ─────────────'"$(set_color normal)"
+    echo "$(__torproxy_color magenta)"'  ╭──────────── статус ─────────────'"$(__torproxy_color normal)"
     __torproxy_row "Режим" $rules
     __torproxy_row "Служба Tor" (systemctl is-active $__torproxy_unit)
     __torproxy_row "Страна выхода" (__torproxy_exit_country)
     set -l excluded (__torproxy_exclude_current)
     set -q excluded[1]; and __torproxy_row "Исключены" (string join ', ' -- $excluded)
+    set -l allowed (__torproxy_allow_current)
+    set -q allowed[1]; and __torproxy_row "Мимо Tor" "$(__torproxy_color yellow)"(string join ', ' -- $allowed)"$(__torproxy_color normal)"
     __torproxy_row "Мосты" (__torproxy_bridges_summary)
     set -l boot выкл
     systemctl -q is-enabled $__torproxy_boot_unit 2>/dev/null; and set boot вкл
@@ -964,11 +1312,11 @@ function __torproxy_status
     __torproxy_row "Скрытие" $hide
 
     if test "$argv[1]" != --quick
-        __torproxy_row "Проверка" "$(set_color brblack)запрос к check.torproject.org…$(set_color normal)"
+        __torproxy_row "Проверка" "$(__torproxy_color brblack)запрос к check.torproject.org…$(__torproxy_color normal)"
         set -l check (__torproxy_check_ip)
         set -l ip (echo $check | jq -r '.IP // empty' 2>/dev/null)
         if test -z "$ip"
-            __torproxy_row "Внешний IP" "$(set_color red)нет ответа$(set_color normal)"
+            __torproxy_row "Внешний IP" "$(__torproxy_color red)нет ответа$(__torproxy_color normal)"
         else
             # страну спрашиваем у GeoIP самого Tor: ipinfo.io отвечает выходам Tor 403
             set -l geo
@@ -978,13 +1326,13 @@ function __torproxy_status
             test -n "$geo"; or set geo (curl -s --max-time 15 https://ipinfo.io/$ip/json | jq -r '[.country, .city] | map(select(. != null)) | join(", ")' 2>/dev/null)
             __torproxy_row "Внешний IP" "$ip $geo"
             if test "$(echo $check | jq -r .IsTor)" = true
-                __torproxy_row "Через Tor" "$(set_color green)✔ да$(set_color normal)"
+                __torproxy_row "Через Tor" "$(__torproxy_color green)✔ да$(__torproxy_color normal)"
             else
-                __torproxy_row "Через Tor" "$(set_color red)✘ нет$(set_color normal)"
+                __torproxy_row "Через Tor" "$(__torproxy_color red)✘ нет$(__torproxy_color normal)"
             end
         end
     end
-    echo "$(set_color magenta)"'  ╰──────────────────────────────────'"$(set_color normal)"
+    echo "$(__torproxy_color magenta)"'  ╰──────────────────────────────────'"$(__torproxy_color normal)"
 end
 
 # Команды на ControlPort Tor (аутентификация cookie); печатает ответы Tor построчно
@@ -1056,11 +1404,11 @@ end
 function __torproxy_doc_row --argument-names level name detail
     switch $level
         case ok
-            __torproxy_row $name "$(set_color green)✔$(set_color normal) $detail"
+            __torproxy_row $name "$(__torproxy_color green)✔$(__torproxy_color normal) $detail"
         case warn
-            __torproxy_row $name "$(set_color yellow)⚠$(set_color normal) $detail"
+            __torproxy_row $name "$(__torproxy_color yellow)⚠$(__torproxy_color normal) $detail"
         case fail
-            __torproxy_row $name "$(set_color red)✘$(set_color normal) $detail"
+            __torproxy_row $name "$(__torproxy_color red)✘$(__torproxy_color normal) $detail"
             set -g __torproxy_doc_fails (math $__torproxy_doc_fails + 1)
     end
 end
@@ -1076,23 +1424,23 @@ function __torproxy_doctor
     set -g __torproxy_doc_fails 0
     set -l pm "sudo pacman -S"
     test "$__torproxy_platform" = debian; and set pm "sudo apt install"
-    echo "$(set_color magenta)"'  ╭──────── диагностика ─────────────'"$(set_color normal)"
+    echo "$(__torproxy_color magenta)"'  ╭──────── диагностика ─────────────'"$(__torproxy_color normal)"
 
     # программы
     for tool in tor nft curl jq socat ss systemctl
-        if command -q $tool
+        if type -q $tool
             set -l detail установлен
-            test $tool = tor; and set detail (command tor --version 2>/dev/null | string match -rg 'version ([0-9.]+)')
+            test $tool = tor; and set detail (tor --version 2>/dev/null | string match -rg 'version ([0-9.]+)')
             __torproxy_doc_row ok $tool "$detail"
         else
             __torproxy_doc_row fail $tool "нет: $pm $tool"
         end
     end
-    if not command -q fzf
+    if not type -q fzf
         __torproxy_doc_row warn fzf "нет: меню будет с номерами вместо стрелок"
     end
     set -l tor_ready 1
-    command -q tor; or set tor_ready 0
+    type -q tor; or set tor_ready 0
     if test -z "$__torproxy_user"
         __torproxy_doc_row fail "Пользователь" "нет пользователя tor или debian-tor"
     end
@@ -1167,6 +1515,9 @@ function __torproxy_doctor
         end
     end
 
+    set -l allowed (__torproxy_allow_current)
+    set -q allowed[1]; and __torproxy_doc_row warn "Исключения" "мимо Tor идёт: "(string join ', ' -- $allowed)
+
     # часы
     if command -q timedatectl
         switch "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
@@ -1187,13 +1538,117 @@ function __torproxy_doctor
         test -n "$why"; and __torproxy_doc_row warn "Прошлый запуск" $why
     end
 
-    echo "$(set_color magenta)"'  ╰──────────────────────────────────'"$(set_color normal)"
+    echo "$(__torproxy_color magenta)"'  ╰──────────────────────────────────'"$(__torproxy_color normal)"
     if test $__torproxy_doc_fails -eq 0
         __torproxy_say green "✔ Неполадок не найдено"
     else
         __torproxy_say red "✘ Неполадок: $__torproxy_doc_fails"
         return 1
     end
+end
+
+# ---------- установка ----------
+
+# Запускатель для любых оболочек. Текст совпадает с bin/torproxy: один файл ставится и без него.
+function __torproxy_launcher_text
+    printf '%s\n' \
+        '#!/usr/bin/env -S fish --no-config' \
+        '# Запуск torproxy из любой оболочки: сам код лежит в functions/torproxy.fish.' \
+        '# SPDX-License-Identifier: GPL-3.0-or-later' \
+        '' \
+        'set -l self (path resolve (status filename))' \
+        'for f in (path dirname $self)/../functions/torproxy.fish \\' \
+        '        (path dirname $self)/../share/fish/vendor_functions.d/torproxy.fish \\' \
+        '        /usr/share/fish/vendor_functions.d/torproxy.fish \\' \
+        '        $HOME/.config/fish/functions/torproxy.fish' \
+        '    if test -r $f' \
+        '        source $f' \
+        '        torproxy $argv' \
+        '        exit $status' \
+        '    end' \
+        'end' \
+        'echo "torproxy: не найден torproxy.fish" >&2' \
+        'exit 127'
+end
+
+function __torproxy_install
+    set -l config $HOME/.config/fish
+    test -n "$XDG_CONFIG_HOME"; and set config $XDG_CONFIG_HOME/fish
+    set -l target $config/functions/torproxy.fish
+    set -l bin $HOME/.local/bin
+    mkdir -p (path dirname $target) $bin; or return 1
+
+    # из своего же каталога копировать нечего: это повторная установка
+    if test "$__torproxy_self" != "$(path resolve $target)"
+        command cp -- $__torproxy_self $target; or begin
+            __torproxy_say red "✘ Не удалось записать $target"
+            return 1
+        end
+    end
+    __torproxy_launcher_text >$bin/torproxy; and chmod 755 $bin/torproxy; or begin
+        __torproxy_say red "✘ Не удалось записать $bin/torproxy"
+        return 1
+    end
+
+    # автодополнение есть только в полной версии, один файл работает и без него
+    set -l completion (path dirname $__torproxy_self)/../completions/torproxy.fish
+    set -l completion_target $config/completions/torproxy.fish
+    if test -r $completion
+        mkdir -p (path dirname $completion_target)
+        if test "$(path resolve $completion)" != "$(path resolve $completion_target)"
+            command cp -- $completion $completion_target
+        end
+    end
+
+    __torproxy_say green "✔ torproxy $__torproxy_version установлен"
+    if not contains -- $bin $PATH
+        echo
+        __torproxy_say yellow "  Каталог $bin не в PATH, поэтому в bash и zsh команды может не быть. Добавь его:"
+        echo "    bash:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+        echo "    zsh:   echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+        echo "    В fish это не нужно."
+    end
+    echo
+    echo "  Открой новый терминал и проверь: torproxy doctor"
+    echo "  Руководство: torproxy guide. Если нет интернета: torproxy off"
+end
+
+function __torproxy_uninstall
+    argparse y/yes -- $argv; or return 1
+    if not set -q _flag_yes
+        if not test -t 0
+            __torproxy_say red "✘ Нужно подтверждение: torproxy uninstall -y"
+            return 1
+        end
+        echo "  Будут выключены Tor-режим и защита при загрузке, возвращены настройки сети,"
+        echo "  убран блок из $__torproxy_torrc и удалены файлы программы. Tor останется."
+        read -P '  Удалить? [y/N] ' -l answer
+        string match -qri '^[yд]' -- "$answer"; or return 1
+    end
+
+    # Сначала всё, что держит систему в изменённом виде: пока файлы на месте, это ещё можно отменить
+    if test -e $__torproxy_systemd_dir/$__torproxy_boot_unit.service
+        __torproxy_boot off; or __torproxy_say yellow "  ⚠ Не удалось снять защиту при загрузке"
+    end
+    if command -q ip; and sudo ip netns list 2>/dev/null | string match -q "$__torproxy_ns*"
+        __torproxy_run --stop
+    end
+    __torproxy_off -y
+    if count (__torproxy_hide_dir)/* >/dev/null
+        __torproxy_hide off; or __torproxy_say yellow "  ⚠ Настройки сети не возвращены: они сохранены в "(__torproxy_hide_dir)
+    end
+    if sudo grep -qxF -- $__torproxy_end $__torproxy_torrc
+        sudo sed -i "/^$__torproxy_begin\$/,/^$__torproxy_end\$/d" $__torproxy_torrc
+        or __torproxy_say yellow "  ⚠ Не удалось убрать блок из $__torproxy_torrc"
+    end
+
+    set -l config $HOME/.config/fish
+    test -n "$XDG_CONFIG_HOME"; and set config $XDG_CONFIG_HOME/fish
+    rm -f $config/functions/torproxy.fish $config/completions/torproxy.fish $HOME/.local/bin/torproxy
+    __torproxy_say green "✔ torproxy удалён, Tor и остальные программы не тронуты"
+    test -e $__torproxy_torrc.bak-torproxy; and echo "  Копия настроек до первого запуска: $__torproxy_torrc.bak-torproxy"
+    echo "  Если ставили пакетом: sudo pacman -R torproxy"
+    echo "  В открытых терминалах команда останется до их закрытия."
 end
 
 # ---------- руководство ----------
@@ -1276,6 +1731,34 @@ obfs4proxy и snowflake-client в Debian и Ubuntu.
 auto сначала пробует подключиться напрямую. Свои мосты обычно надёжнее
 встроенных.
 
+# Одна программа через Tor
+
+  run программа       только эта программа идёт через Tor, остальное как было
+  run --force прог.   запустить, даже если она уже открыта
+  run --stop          завершить всё, что запущено этой командой
+
+Tor-режим включать не нужно, а Tor запустится сам. Программа получает отдельную
+сетевую среду, из которой есть только путь в Tor, поэтому обойти его не может,
+даже если игнорирует настройки прокси.
+
+Важно: браузер и многие программы открывают окно в уже запущенной копии, а она
+работает МИМО Tor. Закрой её заранее или укажи новый профиль. Файлы, DBus и
+другие локальные службы программе по-прежнему доступны. Если Ctrl+C прервал
+запуск, Tor может остаться работать: torproxy off его остановит.
+
+# Исключения: мимо Tor
+
+  allow               показать исключения
+  allow 100.64.0.0/10 пустить адрес или сеть напрямую
+  allow tailscale0    пустить сетевой интерфейс напрямую
+  allow del АДРЕС     убрать одно исключение
+  allow off           убрать все
+
+Это ослабляет защиту: такой трафик идёт с настоящего IP. DNS-запросы всё равно
+идут через Tor, поэтому DNS из Tailscale и похожих программ может не работать.
+Нельзя исключить интерфейс, через который идёт весь интернет, и сети шире /8.
+Исключения видны в status, leaktest и doctor.
+
 # Анонимность
 
   browser             Tor Browser через системный Tor, без двойного Tor
@@ -1335,6 +1818,19 @@ hide требует NetworkManager и переподключает сеть, а 
   «Для мостов … нет программы-транспорта»
       Установи программу, название которой указано в сообщении.
 
+# Установка и удаление
+
+  install             установить этот файл для текущего пользователя
+  uninstall           выключить всё, вернуть настройки и удалить программу
+  uninstall -y        то же без вопроса
+
+Подробная инструкция для разных случаев лежит в файле INSTALL.md: с GitHub,
+из папки или архива, из одного файла, из пакета.
+
+# Настройки вывода
+
+  NO_COLOR=1 torproxy status      вывод без цвета (стандарт no-color.org)
+
 # Файлы
 
   /etc/tor/torrc                  настройки в блоке между метками torproxy
@@ -1352,8 +1848,8 @@ function __torproxy_guide
         __torproxy_guide_text | string replace -r '^# ' ''
         return
     end
-    set -l bold "$(set_color --bold magenta)"
-    set -l off "$(set_color normal)"
+    set -l bold "$(__torproxy_color --bold magenta)"
+    set -l off "$(__torproxy_color normal)"
     set -l text (__torproxy_guide_text | string replace -r '^# (.*)$' "$bold\$1$off")
     if command -q less
         # текст всегда в UTF-8: без этого в локали C less показал бы кириллицу как <D0><A0>
@@ -1464,9 +1960,9 @@ function __torproxy_circuit
     end
     echo
     set -l chain (__torproxy_chain $picked[1] "$picked[2]")
-    set_color --bold
+    __torproxy_color --bold
     echo "  $chain"
-    set_color normal
+    __torproxy_color normal
     echo
     set -l hops (string split , -- $picked[1])
     set -l bridges (__torproxy_bridges_current)
@@ -1562,17 +2058,17 @@ function __torproxy_watch_frame
     if set -q COLUMNS; and test "$COLUMNS" -lt 60
         set width 12
     end
-    echo "$(set_color magenta --bold)"'  ╭─ T O R   P R O X Y ─────'"$(set_color normal) $__torproxy_w_mode"
+    echo "$(__torproxy_color magenta --bold)"'  ╭─ T O R   P R O X Y ─────'"$(__torproxy_color normal) $__torproxy_w_mode"
     if test -z "$__torproxy_w_alive"
-        __torproxy_row Tor "$(set_color red)нет связи$(set_color normal) (torproxy on)"
+        __torproxy_row Tor "$(__torproxy_color red)нет связи$(__torproxy_color normal) (torproxy on)"
     else
-        set -l ip "$(set_color brblack)запрос…$(set_color normal)"
+        set -l ip "$(__torproxy_color brblack)запрос…$(__torproxy_color normal)"
         if test -n "$__torproxy_w_ip"
             set ip "$__torproxy_w_ip $__torproxy_w_ip_cc"
             if test "$__torproxy_w_istor" = true
-                set ip "$ip  $(set_color green)✔ через Tor$(set_color normal)"
+                set ip "$ip  $(__torproxy_color green)✔ через Tor$(__torproxy_color normal)"
             else
-                set ip "$ip  $(set_color red)✘ не через Tor$(set_color normal)"
+                set ip "$ip  $(__torproxy_color red)✘ не через Tor$(__torproxy_color normal)"
             end
         end
         __torproxy_row "Внешний IP" $ip
@@ -1580,14 +2076,14 @@ function __torproxy_watch_frame
         set -l from (math "max(1, "(count $__torproxy_w_down)" - $width + 1)")
         set -l down_graph (__torproxy_spark $__torproxy_w_down[$from..-1])
         set -l up_graph (__torproxy_spark $__torproxy_w_up[$from..-1])
-        __torproxy_row "↓ "(__torproxy_rate $__torproxy_w_down[-1]) "$(set_color magenta)$down_graph$(set_color normal)"
-        __torproxy_row "↑ "(__torproxy_rate $__torproxy_w_up[-1]) "$(set_color cyan)$up_graph$(set_color normal)"
+        __torproxy_row "↓ "(__torproxy_rate $__torproxy_w_down[-1]) "$(__torproxy_color magenta)$down_graph$(__torproxy_color normal)"
+        __torproxy_row "↑ "(__torproxy_rate $__torproxy_w_up[-1]) "$(__torproxy_color cyan)$up_graph$(__torproxy_color normal)"
         __torproxy_row Цепочек "$__torproxy_w_circuits"
         __torproxy_row Работает (__torproxy_duration $__torproxy_w_uptime)
         test -n "$__torproxy_w_chain"; and __torproxy_row Путь $__torproxy_w_chain
     end
-    test -n "$__torproxy_w_msg"; and __torproxy_row "" "$(set_color yellow)$__torproxy_w_msg$(set_color normal)"
-    echo "$(set_color magenta)"'  ╰─'"$(set_color normal) q — выход, n — новый IP"
+    test -n "$__torproxy_w_msg"; and __torproxy_row "" "$(__torproxy_color yellow)$__torproxy_w_msg$(__torproxy_color normal)"
+    echo "$(__torproxy_color magenta)"'  ╰─'"$(__torproxy_color normal) q — выход, n — новый IP"
 end
 
 # Опрос Tor для следующего кадра
@@ -1630,12 +2126,12 @@ function __torproxy_watch_update
         set -l picked (__torproxy_circuit_pick $lines)
         set -g __torproxy_w_chain
         set -q picked[1]; and set -g __torproxy_w_chain (__torproxy_chain $picked[1] "$picked[2]")
-        set -g __torproxy_w_mode "$(set_color yellow)режим неизвестен$(set_color normal)"
+        set -g __torproxy_w_mode "$(__torproxy_color yellow)режим неизвестен$(__torproxy_color normal)"
         if set -l rules (sudo -n nft list table inet $__torproxy_table 2>/dev/null)
-            set -g __torproxy_w_mode "$(set_color green)● включён$(set_color normal)"
-            string match -q '*torproxy-strict*' -- "$rules"; and set -g __torproxy_w_mode "$(set_color green)● включён, строгий$(set_color normal)"
+            set -g __torproxy_w_mode "$(__torproxy_color green)● включён$(__torproxy_color normal)"
+            string match -q '*torproxy-strict*' -- "$rules"; and set -g __torproxy_w_mode "$(__torproxy_color green)● включён, строгий$(__torproxy_color normal)"
         else if sudo -n true 2>/dev/null
-            set -g __torproxy_w_mode "$(set_color yellow)● Tor работает, но трафик идёт напрямую$(set_color normal)"
+            set -g __torproxy_w_mode "$(__torproxy_color yellow)● Tor работает, но трафик идёт напрямую$(__torproxy_color normal)"
         end
     end
 end
@@ -1954,9 +2450,11 @@ function __torproxy_menu
             '🗺️  Схема цепочки' \
             '📊  Живая панель' \
             '🌐  Запустить Tor Browser' \
+            '🎯  Запустить одну программу через Tor' \
             '🔄  Новый IP (новая цепочка)' \
             '🌍  Страна выхода' \
             '🚫  Исключить страны' \
+            '🔓  Исключения: мимо Tor' \
             '🌉  Мосты (обход блокировок Tor)' \
             '🕵️  Скрыть устройство в локальной сети' \
             '🚀  Защита при загрузке' \
@@ -1983,6 +2481,14 @@ function __torproxy_menu
             case '*панель*'
                 __torproxy_watch
                 continue
+            case '*одну программу*'
+                read -P '  Команда (например, curl https://example.com): ' -t -l cmd
+                # read -t оставляет кавычки в словах
+                set -q cmd[1]; and __torproxy_run (string unescape -- $cmd)
+            case '*Исключения*'
+                __torproxy_allow
+                read -P '  Адрес или интерфейс (del АДРЕС — убрать, off — все, Enter — назад): ' -t -l a
+                set -q a[1]; and __torproxy_allow $a
             case '*Tor Browser*'
                 __torproxy_browser
             case '*Скрыть*'
@@ -2035,6 +2541,6 @@ function __torproxy_menu
                 return
         end
         echo
-        read -P "$(set_color brblack)"'  Enter — назад в меню'"$(set_color normal)" -l __pause
+        read -P "$(__torproxy_color brblack)"'  Enter — назад в меню'"$(__torproxy_color normal)" -l __pause
     end
 end

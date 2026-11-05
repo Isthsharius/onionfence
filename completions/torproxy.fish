@@ -1,7 +1,7 @@
 # Автодополнение для torproxy
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-set -l commands on off status leaktest doctor circuit watch browser boot hide clean newip country exclude bridges log version help guide
+set -l commands on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall
 set -l countries de nl ch se fi no is at fr us ca gb ro
 
 complete -c torproxy -f
@@ -12,6 +12,8 @@ complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a leaktest 
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a doctor -d 'Найти неполадку'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a circuit -d 'Схема цепочки'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a watch -d 'Живая панель'
+complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a run -d 'Только эта программа через Tor'
+complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a allow -d 'Исключения: мимо Tor'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a browser -d 'Tor Browser через системный Tor'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a boot -d 'Защита с момента загрузки'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a hide -d 'Случайный MAC, скрыть имя компьютера'
@@ -23,6 +25,8 @@ complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a bridges -
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a log -d 'Журнал Tor'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a version -d 'Версия и платформа'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a help -d 'Краткий список команд'
+complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a install -d 'Установить для текущего пользователя'
+complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a uninstall -d 'Удалить и вернуть настройки'
 complete -c torproxy -n "not __fish_seen_subcommand_from $commands" -a guide -d 'Руководство пользователя'
 
 complete -c torproxy -n '__fish_seen_subcommand_from on' -l strict -d 'Закрыть и локальную сеть'
@@ -39,3 +43,8 @@ complete -c torproxy -n '__fish_seen_subcommand_from bridges' -a add -d 'Сво�
 complete -c torproxy -n '__fish_seen_subcommand_from bridges' -a off -d 'Без мостов'
 complete -c torproxy -n '__fish_seen_subcommand_from bridges; and __fish_seen_subcommand_from auto' -l no-direct -d 'Не пробовать без мостов'
 complete -c torproxy -n '__fish_seen_subcommand_from clean' -F
+complete -c torproxy -n '__fish_seen_subcommand_from allow' -a 'del off'
+complete -c torproxy -n '__fish_seen_subcommand_from run' -l force -d 'Запустить, даже если уже открыта'
+complete -c torproxy -n '__fish_seen_subcommand_from run' -l stop -d 'Завершить запущенное так'
+complete -c torproxy -n '__fish_seen_subcommand_from run' -a '(__fish_complete_subcommand --fcs-skip=2)'
+complete -c torproxy -n '__fish_seen_subcommand_from uninstall' -s y -l yes -d 'Без вопроса'

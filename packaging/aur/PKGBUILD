@@ -6,7 +6,7 @@ pkgdesc='Route all system traffic through Tor with one fish command (nftables, b
 arch=('any')
 url='https://github.com/Isthsharius/torproxy'
 license=('GPL-3.0-or-later')
-depends=('fish' 'tor' 'nftables' 'sudo' 'systemd' 'curl' 'jq' 'socat')
+depends=('fish' 'tor' 'nftables' 'sudo' 'systemd' 'curl' 'jq' 'socat' 'iproute2' 'util-linux')
 optdepends=(
   'fzf: interactive menu with arrow keys'
   'lyrebird-proxy: Tor bridges (obfs4, webtunnel, snowflake)'
@@ -32,4 +32,5 @@ package() {
   install -Dm644 completions/torproxy.fish "$pkgdir/usr/share/fish/vendor_completions.d/torproxy.fish"
   install -Dm755 bin/torproxy "$pkgdir/usr/bin/torproxy"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 INSTALL.md "$pkgdir/usr/share/doc/$pkgname/INSTALL.md"
 }

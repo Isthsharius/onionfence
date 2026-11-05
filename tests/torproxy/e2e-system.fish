@@ -117,6 +117,65 @@ sleep 5
 t_eq "off: сторож не вернул таблицу" 0 (sudo nft list tables | grep -c 'inet torproxy')
 t_eq "off: снова напрямую" false (istor)
 
+# Одна программа через Tor: настоящая изоляция, остальная система идёт напрямую
+function run_istor
+    torproxy run curl -s --max-time 60 https://check.torproject.org/api/ip | string match '{*' | jq -r .IsTor
+end
+for i in (seq 3)
+    set -g run_result (run_istor)
+    test "$run_result" = true; and break
+    sleep 5
+end
+t_eq "run: программа идёт через Tor" true "$run_result"
+t_eq "run: после неё Tor снова остановлен" inactive (systemctl is-active $__torproxy_unit)
+t_eq "run: система всё это время напрямую" false (istor)
+t_eq "run: пространство убрано" 0 (sudo ip netns list | grep -c torproxy-run)
+t_eq "run: правила убраны" 0 (sudo nft list tables | grep -c torproxy_run)
+sudo systemctl start $__torproxy_unit
+for i in (seq 120)
+    curl -s --max-time 10 --socks5-hostname 127.0.0.1:9050 -o /dev/null https://check.torproject.org/api/ip; and break
+    sleep 1
+end
+torproxy run --force sh -c 'exit 7' >/dev/null
+t_eq "run: код возврата программы" 7 $status
+torproxy run --force sh -c 'test ! -e /run/systemd/resolve/io.systemd.Resolve' >/dev/null
+t_eq "run: сокет systemd-resolved спрятан" 0 $status
+torproxy run --force sh -c 'getent hosts check.torproject.org' >/dev/null
+t_eq "run: имена разрешаются через Tor" 0 $status
+torproxy run --force sh -c 'ping -c1 -W2 1.1.1.1' >/dev/null 2>&1
+t_eq "run: ICMP отброшен" 1 $status
+torproxy run --force python3 -c "
+import socket
+try:
+    socket.create_connection(('2001:4860:4860::8888',443),3); raise SystemExit(0)
+except OSError:
+    raise SystemExit(5)" >/dev/null 2>&1
+t_eq "run: IPv6 недоступен" 5 $status
+torproxy run --force ip route show >$T/run-route.txt
+t_has "run: своя сетевая среда" "172.31.250" (command cat $T/run-route.txt)
+torproxy run --force id -u >$T/run-id.txt
+t_eq "run: программа не от root" (id -u) (string match -r '^\d+$' -- (command cat $T/run-id.txt))
+# программа, оставшаяся в фоне, не даёт убрать пространство; --stop завершает её
+torproxy run --force sh -c 'sleep 300 >/dev/null 2>&1 &' >/dev/null
+t_eq "run: фоновая программа оставляет пространство" 1 (sudo ip netns list | grep -c torproxy-run)
+torproxy run --stop >/dev/null
+t_eq "run --stop убирает всё" 0 (sudo ip netns list | grep -c torproxy-run)
+sudo systemctl stop $__torproxy_unit
+
+# Исключения: заведомо известный адрес идёт напрямую, а сняли исключение — снова через Tor
+function cf_ip
+    curl -s --max-time 40 https://1.1.1.1/cdn-cgi/trace | string match -rg '^ip=(.*)$'
+end
+set -l direct_ip (cf_ip)
+torproxy on >/dev/null
+torproxy allow 1.1.1.1 >/dev/null
+t_eq "allow: адрес идёт напрямую, с настоящего IP" "$direct_ip" (cf_ip)
+t_eq "allow: остальное через Tor" true (istor)
+t_eq "allow: сторож работает и после смены правил" active (systemctl is-active torproxy-guard)
+torproxy allow off >/dev/null
+t_eq "allow off: настоящего IP больше не видно" 0 (test "$(cf_ip)" = "$direct_ip"; and echo 1; or echo 0)
+torproxy off -y >/dev/null
+
 # Защита при загрузке: перезагрузить машину CI нельзя, поэтому запускаем службу вручную
 torproxy boot on
 t_eq "boot on → код 0" 0 $status
@@ -136,6 +195,21 @@ torproxy off -y >/dev/null
 torproxy boot off
 t_eq "boot off: служба удалена" 1 (systemctl cat torproxy-boot >/dev/null 2>&1; and echo 0; or echo 1)
 t_eq "после boot off — напрямую" false (istor)
+
+# Установка с нуля, как у нового пользователя: чистый домашний каталог, пакеты уже стоят
+set -l fresh $T/fresh
+mkdir -p $fresh
+env HOME=$fresh sh $DIR/../../install.sh --yes >/dev/null 2>&1
+t_eq "install.sh на настоящей системе" 0 $status
+t_has "установленная команда работает" "служба $__torproxy_unit" (env HOME=$fresh bash -c "$fresh/.local/bin/torproxy version")
+env HOME=$fresh $fresh/.local/bin/torproxy on >/dev/null
+t_eq "установленная команда включает режим" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "… и трафик через Tor" true (istor)
+env HOME=$fresh $fresh/.local/bin/torproxy uninstall -y >/dev/null
+t_eq "uninstall снимает правила" 0 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "uninstall убирает блок из torrc" 0 (sudo grep -c 'torproxy' $__torproxy_torrc)
+t_eq "uninstall останавливает Tor" inactive (systemctl is-active $__torproxy_unit)
+t_eq "после uninstall снова напрямую" false (istor)
 
 set -l failed (grep -c '^FAIL' $T/results)
 echo

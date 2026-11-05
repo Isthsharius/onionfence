@@ -39,7 +39,7 @@ jobs:
       - name: Зависимости
         run: |
           apt-get update
-          apt-get install -y fish tor jq socat curl python3 ca-certificates
+          apt-get install -y fish tor jq socat curl python3 ca-certificates nftables iproute2
           fish --version; tor --version | head -1
 
       - name: Платформа определяется как Debian

@@ -35,7 +35,7 @@ t_eq "torproxy -h → код 0" 0 $status
 set -l out (torproxy blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "torproxy newip" $out
-t_eq "в справке все 19 команд" 19 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
+t_eq "в справке все 23 команд" 23 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -191,7 +191,7 @@ t_has "Debian: журнал tor@default" "journalctl -u tor@default" (command ca
 torproxy off >/dev/null 2>&1
 t_has "Debian: off останавливает tor@default" "systemctl stop tor@default" (command cat $T/calls.log 2>/dev/null)
 t_has "version показывает платформу" "debian: служба tor@default" (torproxy version)
-t_has "version показывает номер версии" "torproxy 0.2.0" (torproxy version)
+t_has "version показывает номер версии" "torproxy $__torproxy_version" (torproxy version)
 set -g __torproxy_platform arch
 set -g __torproxy_unit tor
 
@@ -705,7 +705,7 @@ set -l out (env TERM=dumb fish -c '
     __torproxy_bar 47; echo
     __torproxy_status --quick
     MOCK_FAIL=journalctl torproxy on' 2>&1)
-t_eq "справка: все 19 команд видны" 19 (string match -r '^\s+torproxy' -- $out | count)
+t_eq "справка: все 23 команд видны" 23 (string match -r '^\s+torproxy' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out
@@ -862,7 +862,7 @@ t_has "дополнение: bridges auto --no-direct" "--no-direct" (compl 'tor
 t_has "дополнение: on --strict" "--strict" (compl 'torproxy on --')
 t_has "дополнение: страны" "de" (compl 'torproxy country d')
 # справка и дополнение не должны расходиться с диспетчером
-for c in on off status leaktest doctor circuit watch browser boot hide clean newip country exclude bridges log version help guide
+for c in on off status leaktest doctor circuit watch run allow browser boot hide clean newip country exclude bridges log version help guide install uninstall
     t_has "дополнение знает команду $c" $c (compl "torproxy $c")
 end
 
@@ -1273,6 +1273,225 @@ t_eq "правила есть, Tor не запущен → код 1" 1 $pipestat
 t_has "… объяснено, почему нет интернета" "закрыт" $out
 functions -e nft tor __torproxy_port_used
 source $DIR/lib.fish
+reset_state
+
+# ======================================================================
+section "Этапы подключения и NO_COLOR"
+t_eq "этап: рукопожатие" рукопожатие (__torproxy_stage handshake_done)
+t_eq "этап: цепочка" "строю цепочку" (__torproxy_stage circuit_create)
+t_eq "этап: неизвестная метка — без подписи" 0 (count (__torproxy_stage neznayu))
+t_has "полоса с подписью этапа" "строю цепочку" (__torproxy_bar 80 "строю цепочку" | nocolor)
+t_lacks "вне терминала этап не печатается" "готово" (__torproxy_wait_bootstrap 1 now | nocolor)
+t_lacks "NO_COLOR: справка без управляющих кодов" (printf '\e') "$(NO_COLOR=1 TERM=xterm-256color torproxy help)"
+t_lacks "NO_COLOR: приветствие без кодов" (printf '\e') "$(NO_COLOR=1 TERM=xterm-256color __torproxy_splash)"
+t_has "NO_COLOR: текст приветствия на месте" "T O R" "$(NO_COLOR=1 __torproxy_splash)"
+
+# ======================================================================
+section "Исключения"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+t_has "без исключений так и сказано" "Исключений нет" (torproxy allow | nocolor)
+set -l out (torproxy allow 100.64.0.0/10 | nocolor)
+t_eq "allow сеть → код 0" 0 $pipestatus[1]
+t_has "allow честно предупреждает" "настоящего IP" $out
+t_eq "исключение сохранено" 1 (grep -cx '# torproxy-allow 100.64.0.0/10' $__torproxy_torrc)
+torproxy allow 192.0.2.7 >/dev/null
+t_eq "можно несколько" "100.64.0.0/10 192.0.2.7" (string join ' ' (__torproxy_allow_current))
+t_has "правила: nat пропускает" 'ip daddr 100.64.0.0/10 return comment "torproxy-allow"' (__torproxy_rules)
+t_has "правила: фильтр пропускает" 'ip daddr 100.64.0.0/10 accept comment "torproxy-allow"' (__torproxy_rules)
+t_has "правила: и в строгом режиме" 'ip daddr 192.0.2.7 accept' (__torproxy_rules strict)
+t_has "статус показывает" "100.64.0.0/10, 192.0.2.7" (__torproxy_status --quick | nocolor)
+torproxy on >/dev/null
+t_eq "on не теряет исключения" 1 (grep -cx '# torproxy-allow 192.0.2.7' $__torproxy_torrc)
+torproxy country de >/dev/null
+t_eq "смена страны не теряет исключения" 1 (grep -cx '# torproxy-allow 192.0.2.7' $__torproxy_torrc)
+torproxy country any >/dev/null
+torproxy off -y >/dev/null
+torproxy allow 192.0.2.7 >/dev/null
+t_eq "повтор не дублирует" 1 (grep -cx '# torproxy-allow 192.0.2.7' $__torproxy_torrc)
+torproxy allow del 192.0.2.7 >/dev/null
+t_eq "del убирает одно" 100.64.0.0/10 (__torproxy_allow_current)
+torproxy allow del 192.0.2.7 >/dev/null
+t_eq "del несуществующего → код 1" 1 $status
+for bad in 0.0.0.0/0 10.0.0.0/7 300.1.1.1 1.2.3 '1.1.1.1/33' 'bad name' 'a;b' -x
+    set -l before (md5sum <$__torproxy_torrc)
+    torproxy allow $bad >/dev/null 2>&1
+    t_eq "неверное «$bad» отклонено" 1 $status
+    t_eq "… torrc не изменён" $before (md5sum <$__torproxy_torrc)
+end
+set -l out (torproxy allow lo | nocolor)
+t_eq "lo нельзя" 1 $pipestatus[1]
+function ip
+    if test "$argv[1..3]" = "route show default"
+        echo 'default via 192.168.1.1 dev wlan7 proto dhcp'
+    end
+end
+set -l out (torproxy allow wlan7 | nocolor)
+t_eq "интерфейс интернета нельзя" 1 $pipestatus[1]
+t_has "… объяснено почему" "отключило бы защиту" $out
+functions -e ip
+torproxy allow tailscale0 >/dev/null
+t_has "интерфейс: nat" 'oifname "tailscale0" return' (__torproxy_rules)
+t_has "интерфейс: фильтр" 'oifname "tailscale0" accept' (__torproxy_rules)
+torproxy allow off >/dev/null
+t_eq "off убирает все" 0 (count (__torproxy_allow_current))
+t_lacks "правила снова без исключений" "torproxy-allow" (__torproxy_rules)
+# применение к работающему режиму и к правилам загрузки
+set -gx MOCK_RULES 1
+set -g __torproxy_etc $T/etc
+mkdir -p $T/etc
+__torproxy_rules >$T/etc/rules.nft
+functions -c __torproxy_is_strict __saved_strict
+function __torproxy_is_strict; false; end
+rm -f $T/calls.log
+torproxy allow 192.0.2.9 >/dev/null
+t_has "режим включён: правила заменены сразу" "nft delete table inet torproxy" (command cat $T/calls.log)
+t_has "… правила загрузки тоже" "192.0.2.9" (command cat $T/etc/rules.nft)
+torproxy allow off >/dev/null
+functions -e __torproxy_is_strict
+functions -c __saved_strict __torproxy_is_strict
+functions -e __saved_strict
+rm -f $T/etc/rules.nft
+set -g __torproxy_etc /etc/torproxy
+set -gx MOCK_RULES 0
+
+# ======================================================================
+section "Одна программа через Tor"
+reset_state
+printf '%s\n' '# user' >$__torproxy_torrc
+__torproxy_run_script >$T/run.sh
+sh -n $T/run.sh
+t_eq "сценарий: синтаксис sh" 0 $status
+if command -q shellcheck
+    shellcheck -S error -s sh $T/run.sh >/dev/null
+    t_eq "сценарий: shellcheck без ошибок" 0 $status
+end
+t_has "сценарий прячет systemd-resolved" "/run/systemd/resolve" (command cat $T/run.sh)
+t_has "сценарий отключает IPv6 в пространстве" "net.ipv6.conf.all.disable_ipv6=1" (command cat $T/run.sh)
+t_has "правила: всё остальное отбрасывается" 'iifname "tprun0" drop' (__torproxy_run_rules)
+torproxy run >/dev/null
+t_eq "run без программы → код 1" 1 $status
+torproxy run nosuchprogram-xyz >/dev/null
+t_eq "run: программа не найдена → 127" 127 $status
+
+functions -c sudo __saved_sudo
+# сценарий от root здесь не запускаем: настоящую изоляцию проверяет e2e-system.fish
+function sudo
+    if test "$argv[1]" = sh
+        printf '%s\n' $argv[4..] >$T/run.args
+        return $MOCK_RUN_RC
+    end
+    __saved_sudo $argv
+end
+set -g MOCK_RUN_RC 7
+function pgrep; return 1; end
+echo 0 >$T/tor.state
+set -l out (torproxy run sh -c 'echo "два слова"' 2>&1 | nocolor)
+t_eq "run передаёт код возврата программы" 7 $pipestatus[1]
+t_has "run запускает Tor, если он выключен" "systemctl restart tor" (command cat $T/calls.log)
+t_lacks "run не включает правила всей системы" "nft -f" (command cat $T/calls.log)
+t_has "аргументы переданы без искажений" 'echo "два слова"' (command cat $T/run.args)
+t_eq "первыми идут uid и gid" "torproxy-run $(id -u) $(id -g)" (string join ' ' (command head -3 $T/run.args))
+t_has "окружение графики и PATH передано" "PATH=" (command cat $T/run.args)
+t_eq "после программы Tor снова остановлен" 0 (command cat $T/tor.state)
+echo 1 >$T/tor.state
+rm -f $T/calls.log
+torproxy run sh -c true >/dev/null 2>&1
+t_eq "Tor работал раньше → не останавливаем" 1 (command cat $T/tor.state)
+function pgrep; return 0; end
+set -l out (torproxy run sh -c true </dev/null 2>&1 | nocolor)
+t_eq "программа уже запущена и нет терминала → отказ" 1 $pipestatus[1]
+t_has "… причина названа" "МИМО Tor" $out
+torproxy run --force sh -c true >/dev/null 2>&1
+t_eq "--force запускает" 7 $status
+functions -e pgrep
+functions -e sudo
+functions -c __saved_sudo sudo
+functions -e __saved_sudo
+set -e MOCK_RUN_RC
+echo 0 >$T/tor.state
+reset_state
+
+# ======================================================================
+section "Установка и удаление"
+set -l repo (path resolve $DIR/../..)
+t_eq "install.sh: синтаксис sh" 0 (sh -n $repo/install.sh; echo $status)
+if command -q shellcheck
+    shellcheck -S warning -s sh $repo/install.sh >/dev/null
+    t_eq "install.sh: shellcheck" 0 $status
+end
+t_eq "текст запускателя совпадает с bin/torproxy" "$(command cat $repo/bin/torproxy)" "$(__torproxy_launcher_text)"
+for doc in 'sh install.sh' 'torproxy.fish; torproxy install' 'pacman -U' 'sha256sum' 'torproxy uninstall' 'torproxy doctor'
+    t_has "INSTALL.md: «$doc»" $doc (command cat $repo/INSTALL.md)
+end
+t_has "INSTALL.md сверяет с текущей версией" "/v$__torproxy_version/functions/torproxy.fish" (command cat $repo/INSTALL.md)
+
+# Установка из одного файла: чистый домашний каталог, файл лежит где угодно
+set -l h1 $T/home1
+mkdir -p $h1 $T/single
+command cp $SRC $T/single/torproxy.fish
+env HOME=$h1 XDG_CONFIG_HOME=$h1/.config fish --no-config -c 'source '$T/single/torproxy.fish'; torproxy install' >$T/inst.out 2>&1
+t_eq "один файл: install → код 0" 0 $status
+t_eq "один файл: скопирован" 1 (cmp -s $SRC $h1/.config/fish/functions/torproxy.fish; and echo 1; or echo 0)
+t_eq "один файл: запускатель исполняемый" 1 (test -x $h1/.local/bin/torproxy; and echo 1; or echo 0)
+t_has "один файл: команда работает из sh" "torproxy $__torproxy_version" (env HOME=$h1 sh -c "'$h1/.local/bin/torproxy' version")
+t_eq "один файл: без автодополнения" 0 (test -e $h1/.config/fish/completions/torproxy.fish; and echo 1; or echo 0)
+t_has "подсказка про PATH" ".bashrc" (command cat $T/inst.out)
+t_has "подсказка про проверку" "torproxy doctor" (command cat $T/inst.out)
+env HOME=$h1 XDG_CONFIG_HOME=$h1/.config fish --no-config -c 'source '$h1'/.config/fish/functions/torproxy.fish; torproxy install' >/dev/null 2>&1
+t_eq "повторная установка поверх себя: код 0" 0 $status
+t_eq "… файл не испорчен" 1 (cmp -s $SRC $h1/.config/fish/functions/torproxy.fish; and echo 1; or echo 0)
+
+# Установщик из папки, без установки пакетов
+set -l h2 $T/home2
+mkdir -p $h2
+set -l out (env HOME=$h2 XDG_CONFIG_HOME=$h2/.config sh $repo/install.sh --no-deps 2>&1)
+t_eq "install.sh --no-deps → код 0" 0 $status
+t_eq "install.sh: автодополнение поставлено" 1 (test -r $h2/.config/fish/completions/torproxy.fish; and echo 1; or echo 0)
+t_has "install.sh: команда работает" "torproxy $__torproxy_version" (env HOME=$h2 $h2/.local/bin/torproxy version)
+set -l out (env HOME=$h2 sh $repo/install.sh --bad 2>&1)
+t_eq "install.sh: неизвестный параметр → код 2" 2 $status
+mkdir -p $T/noprog
+command cp $repo/install.sh $T/noprog/
+set -l out (env HOME=$h2 sh $T/noprog/install.sh --no-deps 2>&1)
+t_eq "install.sh без программы рядом → код 1" 1 $status
+t_has "… объяснено" "Не найден" $out
+# нет подтверждения — ничего не ставим
+set -l fakebin $T/fakebin
+mkdir -p $fakebin
+printf '#!/bin/sh\necho PACMAN-CALLED >>%s\n' $T/pm.log >$fakebin/pacman
+printf '#!/bin/sh\n"$@"\n' >$fakebin/sudo
+chmod +x $fakebin/pacman $fakebin/sudo
+echo n | env HOME=$h2 PATH="$fakebin:"(string join : $PATH) sh $repo/install.sh >/dev/null 2>&1
+t_eq "install.sh: ответ «нет» → код 1" 1 $status
+t_eq "… пакеты не ставились" 0 (test -e $T/pm.log; and echo 1; or echo 0)
+echo y | env HOME=$h2 XDG_CONFIG_HOME=$h2/.config PATH="$fakebin:"(string join : $PATH) sh $repo/install.sh >/dev/null 2>&1
+t_eq "install.sh: ответ «да» → код 0" 0 $status
+t_eq "… пакеты поставлены" 1 (test -e $T/pm.log; and echo 1; or echo 0)
+
+# Удаление: возвращает систему в исходное состояние
+reset_state
+printf '%s\n' '# моё' >$__torproxy_torrc
+torproxy on >/dev/null
+set -l h3 $T/home3
+mkdir -p $h3/.config/fish/functions $h3/.config/fish/completions $h3/.local/bin
+touch $h3/.config/fish/functions/torproxy.fish $h3/.config/fish/completions/torproxy.fish $h3/.local/bin/torproxy $h3/.local/bin/другая
+set -l oldhome $HOME
+set -lx XDG_CONFIG_HOME $h3/.config
+set -gx HOME $h3
+set -l out (torproxy uninstall </dev/null 2>&1 | nocolor)
+t_eq "uninstall без терминала и -y → отказ" 1 $pipestatus[1]
+t_eq "… файлы на месте" 1 (test -e $h3/.local/bin/torproxy; and echo 1; or echo 0)
+set -l out (torproxy uninstall -y 2>&1 | nocolor)
+t_eq "uninstall -y → код 0" 0 $pipestatus[1]
+t_eq "файлы удалены" 0 (test -e $h3/.local/bin/torproxy -o -e $h3/.config/fish/functions/torproxy.fish; and echo 1; or echo 0)
+t_eq "чужие файлы не тронуты" 1 (test -e $h3/.local/bin/другая; and echo 1; or echo 0)
+t_eq "блок убран из torrc" 0 (grep -c torproxy $__torproxy_torrc)
+t_eq "настройки пользователя остались" 1 (grep -cx '# моё' $__torproxy_torrc)
+t_eq "Tor остановлен" 0 (command cat $T/tor.state)
+t_has "правила сняты" "nft delete table inet torproxy" (command cat $T/calls.log)
+set -gx HOME $oldhome
+set -e XDG_CONFIG_HOME
 reset_state
 
 # ======================================================================

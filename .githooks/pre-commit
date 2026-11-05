@@ -2,7 +2,7 @@
 # Перед коммитом изменений torproxy прогоняет офлайн-тесты (живой Tor не запускается).
 # Пропустить один раз: git commit --no-verify
 
-git diff --cached --name-only | grep -qE '^(functions/torproxy\.fish|bin/torproxy|completions/torproxy\.fish|tests/torproxy/)' || exit 0
+git diff --cached --name-only | grep -qE '^(install\.sh|functions/torproxy\.fish|bin/torproxy|completions/torproxy\.fish|tests/torproxy/)' || exit 0
 
 echo "torproxy: запускаю тесты (около 40 секунд)…"
 log=$(mktemp)

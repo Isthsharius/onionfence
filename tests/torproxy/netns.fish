@@ -131,6 +131,53 @@ __torproxy_on >/dev/null 2>&1
 t_eq "обычный on снова открывает локальную сеть" LEFT (probe user udp 192.168.88.1 5000)
 __torproxy_off -y >/dev/null 2>&1
 
+section "torproxy allow"
+torproxy allow 192.0.2.50 >/dev/null 2>&1
+__torproxy_on --strict >/dev/null 2>&1
+t_eq "исключённый адрес идёт напрямую" LEFT (probe user udp 192.0.2.50 5000)
+t_eq "TCP к нему тоже мимо TransPort" 1 (test (probe user tcp 192.0.2.50 80) != $TP; and echo 1; or echo 0)
+t_eq "соседний адрес по-прежнему через Tor" $TP (probe user tcp 192.0.2.51 80)
+t_eq "DNS к исключённому адресу всё равно через Tor" $DP (probe user udp 192.0.2.50 53)
+torproxy allow off >/dev/null 2>&1
+t_eq "снято на лету: снова через Tor" $TP (probe user tcp 192.0.2.50 80)
+__torproxy_off -y >/dev/null 2>&1
+
+section "torproxy run: файрвол отдельного пространства"
+# Вложенное пространство вместо ip netns (тому нужен настоящий root): правила и маршруты те же
+unshare -n sleep 60 &
+set -g child $last_pid
+sleep 0.3
+ip link add $__torproxy_ns_host type veth peer name $__torproxy_ns_peer
+ip link set $__torproxy_ns_peer netns $child
+sysctl -qw net.ipv4.conf.$__torproxy_ns_host.route_localnet=1
+sysctl -qw net.ipv4.conf.$__torproxy_ns_host.rp_filter=0
+ip addr add $__torproxy_ns_host_ip/30 dev $__torproxy_ns_host
+ip link set $__torproxy_ns_host up
+function inner
+    nsenter -t $child -n $argv
+end
+inner ip link set lo up
+inner ip addr add $__torproxy_ns_peer_ip/30 dev $__torproxy_ns_peer
+inner ip link set $__torproxy_ns_peer up
+inner ip route add default via $__torproxy_ns_host_ip
+__torproxy_run_rules | nft -f -
+t_eq "правила приняты" 0 $status
+function iprobe
+    inner python3 -I $DIR/probe.py $argv
+end
+# только адреса из проверок: общий счётчик ловит и посторонний фон интерфейса
+nft add counter inet obs leak
+nft add rule inet obs post ip daddr '{ 1.1.1.1, 192.0.2.1, 192.168.88.1 }' counter name leak
+t_eq "программа: TCP наружу → TransPort" $TP (iprobe tcp 1.1.1.1 443)
+t_eq "программа: DNS → DNSPort" $DP (iprobe udp 192.0.2.1 53)
+t_eq "программа: UDP наружу отброшен" TIMEOUT (iprobe udp 1.1.1.1 443)
+t_eq "программа: UDP в локальную сеть отброшен" TIMEOUT (iprobe udp 192.168.88.1 5000)
+t_eq "программа: ничего не ушло в сеть напрямую" 0 (nft list counter inet obs leak | string match -rg 'packets (\d+)')
+t_eq "хост при этом работает как обычно" LEFT (probe user udp 1.1.1.1 443)
+nft delete table inet torproxy_run
+ip link del $__torproxy_ns_host
+kill $child 2>/dev/null
+
 section "Правила защиты при загрузке"
 set -g __torproxy_etc $T/ns-etc
 set -g __torproxy_systemd_dir $T/ns-sd
