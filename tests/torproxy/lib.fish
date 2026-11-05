@@ -10,7 +10,8 @@ set -g __torproxy_cookie /var/lib/tor/control_auth_cookie
 
 # sed, а не string: builtin string внутри функции не читает канал, если у fish нет терминала
 function nocolor
-    command sed 's/\x1b\[[0-9;]*m//g'
+    # fish 3 на старых терминалах заканчивает цвет ещё и последовательностью ESC ( B
+    command sed 's/\x1b\[[0-9;]*m//g; s/\x1b(B//g'
 end
 
 function __t_record --argument-names result name detail

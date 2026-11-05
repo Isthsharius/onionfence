@@ -538,10 +538,10 @@ t_eq "неизвестное действие → код 1" 1 $status
 t_has "boot без аргументов — подсказка" "torproxy boot on" (torproxy boot | nocolor)
 
 touch $T/boot.enabled
-t_has "статус: защита при загрузке вкл" "При загрузке     вкл" (__torproxy_status --quick | nocolor)
+t_has "статус: защита при загрузке вкл" "При загрузке вкл" (__torproxy_status --quick | nocolor | string replace -ra ' +' ' ')
 t_has "off напоминает, что режим вернётся при загрузке" "При следующей загрузке" (torproxy off | nocolor)
 rm -f $T/boot.enabled
-t_has "статус: защита при загрузке выкл" "При загрузке     выкл" (__torproxy_status --quick | nocolor)
+t_has "статус: защита при загрузке выкл" "При загрузке выкл" (__torproxy_status --quick | nocolor | string replace -ra ' +' ' ')
 set -g __torproxy_etc /etc/torproxy
 set -g __torproxy_systemd_dir /etc/systemd/system
 
@@ -610,7 +610,7 @@ function nmcli
     end
 end
 set -l hd $XDG_STATE_HOME/torproxy/hide
-t_has "статус: скрытие выключено" "Скрытие          выкл" (__torproxy_status --quick | nocolor)
+t_has "статус: скрытие выключено" "Скрытие выкл" (__torproxy_status --quick | nocolor | string replace -ra ' +' ' ')
 torproxy hide on >/dev/null
 t_eq "hide on → код 0" 0 $status
 t_has "Wi-Fi: случайный MAC" "modify uuid-wifi 802-11-wireless.cloned-mac-address random" (command cat $T/nm.log)
@@ -620,7 +620,7 @@ t_has "имя не передаётся по mDNS и LLMNR" "connection.mdns no 
 t_has "подключение перезапущено" "connection up uuid-wifi" (command cat $T/nm.log)
 t_lacks "loopback не трогаем" "uuid-lo" (grep -E 'modify|connection up' $T/nm.log)
 t_eq "старые значения сохранены" "802-11-wireless.cloned-mac-address=|ipv4.dhcp-send-hostname=-1|ipv6.dhcp-send-hostname=-1|connection.mdns=-1|connection.llmnr=-1" (string join '|' (command cat $hd/uuid-wifi))
-t_has "статус: скрытие включено" "Скрытие          вкл" (__torproxy_status --quick | nocolor)
+t_has "статус: скрытие включено" "Скрытие вкл" (__torproxy_status --quick | nocolor | string replace -ra ' +' ' ')
 t_has "hide без аргументов показывает состояние" "Устройство скрыто" (torproxy hide | nocolor)
 set -gx MOCK_MAC random
 torproxy hide on >/dev/null
