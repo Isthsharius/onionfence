@@ -102,6 +102,52 @@ t_eq "TCP снова напрямую" LEFT (probe user tcp 1.1.1.1 443)
 t_eq "UDP снова напрямую" LEFT (probe user udp 8.8.8.8 443)
 t_eq "чужие таблицы не тронуты" 1 (nft list tables | grep -c 'inet obs')
 
+section "torproxy leaktest"
+set -g __torproxy_leak_wait 1
+set -l out (__torproxy_leaktest 2>&1 | nocolor)
+t_eq "режим выключен → утечки найдены, код 1" 1 $pipestatus[1]
+t_has "… видно, что UDP уходит" "✘ мимо Tor не выходит" $out
+__torproxy_on >/dev/null 2>&1
+set -l out (__torproxy_leaktest 2>&1 | nocolor)
+t_eq "режим включён → код 0" 0 $pipestatus[1]
+t_has "… утечек нет" "Утечек не найдено" $out
+__torproxy_off -y >/dev/null 2>&1
+
+section "torproxy on --strict"
+__torproxy_on --strict >/dev/null 2>&1
+t_eq "on --strict → код 0" 0 $status
+t_has "статус показывает строгий режим" "ВКЛЮЧЁН (строгий)" (__torproxy_status --quick | nocolor)
+t_eq "TCP наружу → TransPort" $TP (probe user tcp 1.1.1.1 443)
+t_eq "TCP в локальную сеть не уходит напрямую" $TP (probe user tcp 192.168.88.1 80)
+t_eq "UDP в локальную сеть заблокирован" BLOCKED (probe user udp 192.168.88.1 5000)
+t_eq "DNS → DNSPort" $DP (probe user udp 192.168.88.1 53)
+t_eq "DHCP проходит" LEFT (probe root dhcp 255.255.255.255 67)
+t_eq "ICMP заблокирован" BLOCKED (probe_ping 192.168.88.1)
+t_eq "трафик Tor идёт напрямую" LEFT (probe tor tcp 1.1.1.1 443)
+__torproxy_bridges off >/dev/null 2>&1
+t_has "смена мостов не снимает строгий режим" "ВКЛЮЧЁН (строгий)" (__torproxy_status --quick | nocolor)
+t_eq "… и локальная сеть по-прежнему закрыта" BLOCKED (probe user udp 192.168.88.1 5000)
+__torproxy_on >/dev/null 2>&1
+t_eq "обычный on снова открывает локальную сеть" LEFT (probe user udp 192.168.88.1 5000)
+__torproxy_off -y >/dev/null 2>&1
+
+section "Правила защиты при загрузке"
+set -g __torproxy_etc $T/ns-etc
+set -g __torproxy_systemd_dir $T/ns-sd
+mkdir -p $T/ns-sd
+__torproxy_boot on >/dev/null 2>&1
+t_eq "boot on: настоящий nft проверил правила" 0 $status
+nft -f $T/ns-etc/rules.nft
+t_eq "файл правил применяется" 0 $status
+t_eq "из файла: TCP наружу → TransPort" $TP (probe user tcp 1.1.1.1 443)
+t_eq "из файла: UDP заблокирован" BLOCKED (probe user udp 8.8.8.8 443)
+nft delete table inet torproxy
+__torproxy_boot on --strict >/dev/null 2>&1
+nft -f $T/ns-etc/rules.nft
+t_eq "boot on --strict: локальная сеть закрыта" BLOCKED (probe user udp 192.168.88.1 5000)
+nft delete table inet torproxy
+__torproxy_boot off >/dev/null 2>&1
+
 section "Tor не подключился за отведённое время"
 set -gx MOCK_BOOT 5 50
 __torproxy_on >$T/ns-timeout.out 2>&1

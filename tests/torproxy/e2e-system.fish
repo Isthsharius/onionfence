@@ -45,6 +45,9 @@ try:
 except PermissionError: print('BLOCKED')
 except OSError: print('BLOCKED')")
 
+torproxy leaktest
+t_eq "leaktest на настоящей системе → код 0" 0 $status
+
 torproxy newip
 t_eq "newip → код 0" 0 $status
 torproxy country de
@@ -52,9 +55,27 @@ set -l out (torproxy status)
 t_has "country de → выход в Германии" " DE" (string match '*Внешний IP*' -- $out)
 torproxy country any >/dev/null
 
+torproxy on --strict >/dev/null
+t_eq "on --strict → код 0" 0 $status
+t_eq "строгий режим: трафик через Tor" true (istor)
+torproxy leaktest
+t_eq "строгий режим: leaktest → код 0" 0 $status
+
 torproxy off
 t_eq "off: таблица удалена" 0 (sudo nft list tables | grep -c 'inet torproxy')
 t_eq "off: снова напрямую" false (istor)
+
+# Защита при загрузке: перезагрузить машину CI нельзя, поэтому запускаем службу вручную
+torproxy boot on
+t_eq "boot on → код 0" 0 $status
+t_eq "служба включена" enabled (systemctl is-enabled torproxy-boot)
+sudo systemctl start torproxy-boot
+t_eq "служба поднимает правила" 1 (sudo nft list tables | grep -c 'inet torproxy')
+t_eq "… и трафик идёт через Tor" true (istor)
+torproxy off -y >/dev/null
+torproxy boot off
+t_eq "boot off: служба удалена" 1 (systemctl cat torproxy-boot >/dev/null 2>&1; and echo 0; or echo 1)
+t_eq "после boot off — напрямую" false (istor)
 
 set -l failed (grep -c '^FAIL' $T/results)
 echo

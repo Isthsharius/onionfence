@@ -21,7 +21,7 @@ function reset_state
     set -gx MOCK_SUDO_CACHED 1
     set -gx MOCK_RULES 0
     set -gx MOCK_CHECK '{"IsTor":true,"IP":"1.2.3.4"}'
-    set -e MOCK_RESTART_FAIL MOCK_NFT_FAIL MOCK_FAIL
+    set -e MOCK_RESTART_FAIL MOCK_NFT_FAIL MOCK_FAIL MOCK_NFT_CHECK_FAIL MOCK_TOR_ENABLED MOCK_ENABLE_FAIL
 end
 
 # ======================================================================
@@ -35,7 +35,7 @@ t_eq "torproxy -h → код 0" 0 $status
 set -l out (torproxy blabla | nocolor)
 t_eq "неизвестная команда → код 1" 1 $pipestatus[1]
 t_has "неизвестная команда показывает справку" "torproxy newip" $out
-t_eq "в справке все 9 команд" 9 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
+t_eq "в справке все 14 команд" 14 (torproxy help | nocolor | string match -r '^\s+torproxy' | count)
 
 # ======================================================================
 section "Полоска прогресса"
@@ -191,7 +191,7 @@ t_has "Debian: журнал tor@default" "journalctl -u tor@default" (command ca
 torproxy off >/dev/null 2>&1
 t_has "Debian: off останавливает tor@default" "systemctl stop tor@default" (command cat $T/calls.log 2>/dev/null)
 t_has "version показывает платформу" "debian: служба tor@default" (torproxy version)
-t_has "version показывает номер версии" "torproxy 0.1.0" (torproxy version)
+t_has "version показывает номер версии" "torproxy 0.2.0" (torproxy version)
 set -g __torproxy_platform arch
 set -g __torproxy_unit tor
 
@@ -211,8 +211,10 @@ function block
 end
 
 t_eq "по умолчанию мостов нет" нет (__torproxy_bridges_summary)
+t_eq "без мостов сайт проверки ждём 30 секунд" 30 (__torproxy_check_timeout)
 torproxy bridges snowflake >/dev/null
 t_eq "snowflake: код 0" 0 $status
+t_eq "с мостами сайт проверки ждём 60 секунд" 60 (__torproxy_check_timeout)
 t_eq "snowflake: 2 встроенных моста" 2 (block | grep -c '^Bridge snowflake ')
 t_eq "snowflake: UseBridges 1" 1 (block | grep -cx 'UseBridges 1')
 t_eq "snowflake: транспорт lyrebird" "ClientTransportPlugin snowflake exec $T/bin/lyrebird" (block | grep '^ClientTransportPlugin')
@@ -418,6 +420,278 @@ t_has "off удаляет таблицу" "nft delete table inet torproxy" (comm
 t_has "off останавливает Tor" "systemctl stop tor" (command cat $T/calls.log 2>/dev/null)
 
 # ======================================================================
+section "Tor Browser"
+reset_state
+torproxy browser >/dev/null
+t_eq "Tor выключен → код 1" 1 $status
+echo 1 >$T/tor.state
+mkdir -p $T/tb $T/empty
+printf '#!/bin/sh\nenv >"%s/browser.env"\n' $T >$T/tb/tor-browser
+chmod +x $T/tb/tor-browser
+set -l saved_path $PATH
+set -gx PATH $T/tb $PATH
+set -l out (torproxy browser | nocolor)
+t_eq "запуск → код 0" 0 $pipestatus[1]
+set -gx PATH $saved_path
+for i in (seq 30)
+    test -s $T/browser.env; and break
+    sleep 0.1
+end
+set -l tbenv (command cat $T/browser.env 2>/dev/null)
+t_has "свой Tor браузер не запускает" "TOR_SKIP_LAUNCH=1" $tbenv
+t_has "провайдер Tor отключён" "TOR_PROVIDER=none" $tbenv
+t_has "браузер идёт в системный SocksPort" "TOR_SOCKS_PORT=9050" $tbenv
+t_has "… на локальном адресе" "TOR_SOCKS_HOST=127.0.0.1" $tbenv
+
+function browser_bin --argument-names home path
+    set -lx HOME $home
+    set -lx PATH $path
+    __torproxy_browser_binary
+end
+set -l tbb $T/home/.local/share/torbrowser/tbb/x86_64/tor-browser/Browser
+mkdir -p $tbb $T/launcher
+printf '#!/bin/sh\n' >$tbb/start-tor-browser
+printf '#!/bin/sh\n' >$T/launcher/torbrowser-launcher
+chmod +x $tbb/start-tor-browser $T/launcher/torbrowser-launcher
+t_eq "находит браузер, скачанный лаунчером" $tbb/start-tor-browser (browser_bin $T/home $T/empty)
+t_eq "скачанный браузер важнее лаунчера" $tbb/start-tor-browser (browser_bin $T/home $T/launcher)
+t_eq "браузера нет → лаунчер скачает его" $T/launcher/torbrowser-launcher (browser_bin $T/empty $T/launcher)
+t_eq "нет ни браузера, ни лаунчера" "" "$(browser_bin $T/empty $T/empty)"
+functions -c __torproxy_browser_binary __saved_browser_binary
+functions -e __torproxy_browser_binary
+function __torproxy_browser_binary
+end
+set -l out (torproxy browser | nocolor)
+t_eq "не найден → код 1" 1 $pipestatus[1]
+t_has "не найден → подсказка установки" "torbrowser-launcher" $out
+functions -e __torproxy_browser_binary
+functions -c __saved_browser_binary __torproxy_browser_binary
+
+# ======================================================================
+section "Защита при загрузке"
+reset_state
+printf '%s\n' $orig >$__torproxy_torrc
+set -g __torproxy_etc $T/etc
+set -g __torproxy_systemd_dir $T/sd
+mkdir -p $T/sd
+set -l service $T/sd/torproxy-boot.service
+torproxy boot on >/dev/null
+t_eq "boot on → код 0" 0 $status
+t_has "правила записаны" "redirect to :9040" (command cat $T/etc/rules.nft 2>/dev/null)
+t_lacks "по умолчанию не строгий" "torproxy-strict" (command cat $T/etc/rules.nft 2>/dev/null)
+t_has "torrc обновлён" "TransPort" (command cat $__torproxy_torrc)
+t_has "службы включены" "systemctl enable torproxy-boot tor" (command cat $T/calls.log 2>/dev/null)
+t_lacks "сейчас ничего не запускается" "start" (command cat $T/calls.log 2>/dev/null)
+t_has "служба раньше сети" "Before=network-pre.target" (command cat $service 2>/dev/null)
+t_has "служба позже nftables.service (его flush стёр бы правила)" "After=local-fs.target nftables.service" (command cat $service 2>/dev/null)
+t_has "служба в sysinit.target" "WantedBy=sysinit.target" (command cat $service 2>/dev/null)
+if command -q systemd-analyze; and command -q nft
+    systemd-analyze verify $service >$T/verify-unit.out 2>&1
+    t_eq "systemd-analyze принимает службу" 0 $status
+end
+torproxy boot on --strict >/dev/null
+t_has "boot on --strict → строгие правила" "torproxy-strict" (command cat $T/etc/rules.nft 2>/dev/null)
+t_eq "Tor не был включён → отметки нет" 0 (test -e $T/etc/tor-was-enabled; and echo 1; or echo 0)
+
+rm -f $T/calls.log
+torproxy boot off >/dev/null
+t_eq "boot off → служба удалена" 0 (test -e $service; and echo 1; or echo 0)
+t_eq "boot off → правила удалены" 0 (test -e $T/etc; and echo 1; or echo 0)
+t_eq "boot off → Tor снова выключен при загрузке" 1 (grep -cx "systemctl disable tor" $T/calls.log)
+
+rm -f $T/calls.log
+torproxy boot on >/dev/null
+set -gx MOCK_TOR_ENABLED 1
+torproxy boot on >/dev/null
+t_eq "повторный on: Tor включён нами, а не пользователем → отметки нет" 0 (test -e $T/etc/tor-was-enabled; and echo 1; or echo 0)
+torproxy boot off >/dev/null
+t_eq "… и boot off выключает его" 1 (grep -cx "systemctl disable tor" $T/calls.log)
+
+rm -f $T/calls.log
+set -l out (torproxy boot off | nocolor)
+t_eq "boot off без on → код 0" 0 $pipestatus[1]
+t_has "boot off без on → сообщение" "и так выключена" $out
+t_lacks "boot off без on → автозапуск Tor не трогает" "disable" (command cat $T/calls.log 2>/dev/null)
+
+rm -f $T/calls.log
+torproxy boot on >/dev/null
+t_eq "Tor включал сам пользователь → отметка" 1 (test -e $T/etc/tor-was-enabled; and echo 1; or echo 0)
+torproxy boot off >/dev/null
+t_eq "… и boot off его не трогает" 0 (grep -cx "systemctl disable tor" $T/calls.log)
+set -e MOCK_TOR_ENABLED
+
+rm -f $T/calls.log $service
+set -gx MOCK_NFT_CHECK_FAIL 1
+set -l out (torproxy boot on | nocolor)
+t_eq "nft не принял правила → код 1" 1 $pipestatus[1]
+t_has "nft не принял → сообщение" "защита не включена" $out
+t_eq "nft не принял → служба не создана" 0 (test -e $service; and echo 1; or echo 0)
+t_lacks "nft не принял → ничего не включено" "enable" (command cat $T/calls.log 2>/dev/null)
+set -e MOCK_NFT_CHECK_FAIL
+set -gx MOCK_ENABLE_FAIL 1
+torproxy boot on >/dev/null
+t_eq "systemctl enable упал → код 1" 1 $status
+set -e MOCK_ENABLE_FAIL
+torproxy boot off >/dev/null
+torproxy boot blabla >/dev/null
+t_eq "неизвестное действие → код 1" 1 $status
+t_has "boot без аргументов — подсказка" "torproxy boot on" (torproxy boot | nocolor)
+
+touch $T/boot.enabled
+t_has "статус: защита при загрузке вкл" "При загрузке     вкл" (__torproxy_status --quick | nocolor)
+t_has "off напоминает, что режим вернётся при загрузке" "При следующей загрузке" (torproxy off | nocolor)
+rm -f $T/boot.enabled
+t_has "статус: защита при загрузке выкл" "При загрузке     выкл" (__torproxy_status --quick | nocolor)
+set -g __torproxy_etc /etc/torproxy
+set -g __torproxy_systemd_dir /etc/systemd/system
+
+# ======================================================================
+section "Предупреждение при выключении"
+reset_state
+function ss
+    printf '%s\n' \
+        '0 0 192.168.1.5:45110 93.184.216.34:443 users:(("opera",pid=1,fd=1))' \
+        '0 0 192.168.1.5:45111 93.184.216.35:443 users:(("opera",pid=1,fd=2))' \
+        '0 0 192.168.1.5:45112 1.1.1.1:443 users:(("telegram-desktop",pid=2,fd=1))' \
+        '0 0 192.168.1.5:22 192.168.1.9:50000 users:(("sshd",pid=3,fd=1))' \
+        '0 0 127.0.0.1:5000 127.0.0.1:5001 users:(("local",pid=4,fd=1))' \
+        '0 0 192.168.1.5:9001 5.6.7.8:443 users:(("tor",pid=5,fd=1))' \
+        '0 0 [::1]:5000 [::1]:5001 users:(("local6",pid=6,fd=1))'
+end
+t_eq "программы: только идущие наружу, без повторов и без Tor" "opera telegram-desktop" (string join ' ' (__torproxy_online_apps))
+set -gx MOCK_RULES 1
+set -l out (torproxy off </dev/null | nocolor)
+t_eq "без терминала: не спрашивает, выключает" 0 $pipestatus[1]
+t_has "предупреждение называет программы" "opera, telegram-desktop" $out
+t_has "… и выключает" "systemctl stop tor" (command cat $T/calls.log 2>/dev/null)
+function isatty
+    true
+end
+rm -f $T/calls.log
+set -l out (echo n | torproxy off | nocolor)
+t_eq "ответ «n» → код 1" 1 $pipestatus[2]
+t_has "ответ «n» → отменено" "Отменено" $out
+t_lacks "ответ «n» → правила не сняты" "delete table" (command cat $T/calls.log 2>/dev/null)
+t_lacks "ответ «n» → Tor работает" "systemctl stop" (command cat $T/calls.log 2>/dev/null)
+rm -f $T/calls.log
+echo | torproxy off >/dev/null
+t_lacks "пустой ответ (Enter) = отмена" "delete table" (command cat $T/calls.log 2>/dev/null)
+for yes in y Y да
+    rm -f $T/calls.log
+    echo $yes | torproxy off >/dev/null
+    t_has "ответ «$yes» → выключает" "delete table" (command cat $T/calls.log 2>/dev/null)
+end
+rm -f $T/calls.log
+torproxy off -y >/dev/null
+t_has "off -y: без вопроса" "delete table" (command cat $T/calls.log 2>/dev/null)
+functions -e isatty
+set -gx MOCK_RULES 0
+t_lacks "режим не включён → без предупреждения" "Через Tor" (torproxy off </dev/null | nocolor)
+functions -e ss
+
+# ======================================================================
+section "Скрытие устройства"
+reset_state
+set -gx MOCK_MAC ''
+function nmcli
+    echo "nmcli $argv" >>$T/nm.log
+    switch "$argv"
+        case '-t -f UUID,TYPE connection show --active'
+            test "$MOCK_NM_NOCONN" = 1; and return
+            printf '%s\n' uuid-wifi:802-11-wireless uuid-lo:loopback uuid-eth:802-3-ethernet
+        case '-t -f UUID connection show --active'
+            printf '%s\n' uuid-wifi uuid-lo uuid-eth
+        case '-g *.cloned-mac-address connection show *'
+            echo $MOCK_MAC
+        case '-g *'
+            echo -1
+        case 'connection up *'
+            test "$MOCK_NM_UP_FAIL" != 1
+    end
+end
+set -l hd $XDG_STATE_HOME/torproxy/hide
+t_has "статус: скрытие выключено" "Скрытие          выкл" (__torproxy_status --quick | nocolor)
+torproxy hide on >/dev/null
+t_eq "hide on → код 0" 0 $status
+t_has "Wi-Fi: случайный MAC" "modify uuid-wifi 802-11-wireless.cloned-mac-address random" (command cat $T/nm.log)
+t_has "Ethernet: случайный MAC" "modify uuid-eth 802-3-ethernet.cloned-mac-address random" (command cat $T/nm.log)
+t_has "имя не передаётся по DHCP" "ipv4.dhcp-send-hostname no ipv6.dhcp-send-hostname no" (command cat $T/nm.log)
+t_has "имя не передаётся по mDNS и LLMNR" "connection.mdns no connection.llmnr no" (command cat $T/nm.log)
+t_has "подключение перезапущено" "connection up uuid-wifi" (command cat $T/nm.log)
+t_lacks "loopback не трогаем" "uuid-lo" (grep -E 'modify|connection up' $T/nm.log)
+t_eq "старые значения сохранены" "802-11-wireless.cloned-mac-address=|ipv4.dhcp-send-hostname=-1|ipv6.dhcp-send-hostname=-1|connection.mdns=-1|connection.llmnr=-1" (string join '|' (command cat $hd/uuid-wifi))
+t_has "статус: скрытие включено" "Скрытие          вкл" (__torproxy_status --quick | nocolor)
+t_has "hide без аргументов показывает состояние" "Устройство скрыто" (torproxy hide | nocolor)
+set -gx MOCK_MAC random
+torproxy hide on >/dev/null
+t_has "повторный on не затирает настоящие значения" "cloned-mac-address=" (head -1 $hd/uuid-wifi)
+t_lacks "… в файле нет random" "random" (command cat $hd/uuid-wifi)
+printf '' >$T/nm.log
+torproxy hide off >/dev/null
+t_eq "hide off → код 0" 0 $status
+t_has "off возвращает прежние значения" "modify uuid-wifi 802-11-wireless.cloned-mac-address  ipv4.dhcp-send-hostname -1 ipv6.dhcp-send-hostname -1 connection.mdns -1 connection.llmnr -1" (command cat $T/nm.log)
+t_has "off перезапускает подключение" "connection up uuid-wifi" (command cat $T/nm.log)
+t_eq "off удаляет сохранённое" 0 (count $hd/*)
+set -gx MOCK_NM_UP_FAIL 1
+set -l out (torproxy hide on | nocolor)
+t_eq "подключение не поднялось → код 1" 1 $pipestatus[1]
+t_has "… и подсказка, как вернуть" "torproxy hide off" $out
+set -e MOCK_NM_UP_FAIL
+torproxy hide off >/dev/null
+set -gx MOCK_NM_NOCONN 1
+torproxy hide on >/dev/null
+t_eq "нет Wi-Fi и Ethernet → код 1" 1 $status
+set -e MOCK_NM_NOCONN
+torproxy hide blabla >/dev/null
+t_eq "неизвестное действие → код 1" 1 $status
+functions -e nmcli
+if command -q nmcli
+    # настоящий nmcli без связи со службой: принимает ли он наши свойства и значения
+    command nmcli --offline connection add type wifi con-name t ssid t 802-11-wireless.cloned-mac-address random \
+        ipv4.dhcp-send-hostname no ipv6.dhcp-send-hostname no connection.mdns no connection.llmnr no >/dev/null 2>&1
+    t_eq "nmcli принимает настройки скрытия (Wi-Fi)" 0 $status
+    command nmcli --offline connection add type ethernet con-name t 802-3-ethernet.cloned-mac-address random >/dev/null 2>&1
+    t_eq "nmcli принимает настройки скрытия (Ethernet)" 0 $status
+    command nmcli --offline connection add type wifi con-name t ssid t 802-11-wireless.cloned-mac-address '' \
+        ipv4.dhcp-send-hostname -1 ipv6.dhcp-send-hostname -1 connection.mdns -1 connection.llmnr -1 >/dev/null 2>&1
+    t_eq "nmcli принимает значения для возврата" 0 $status
+end
+
+# ======================================================================
+section "Метаданные"
+reset_state
+torproxy clean >/dev/null
+t_eq "без файла → код 1" 1 $status
+function mat2
+    test "$MOCK_MAT2_FAIL" != 1
+end
+printf x >"$T/моё фото.jpg"
+set -l out (torproxy clean "$T/моё фото.jpg" | nocolor)
+t_eq "файл с пробелом → код 0" 0 $pipestatus[1]
+t_has "показывает имя очищенного файла" "моё фото.cleaned.jpg" $out
+t_has "предупреждает о том, что mat2 не убирает" "не убирает" $out
+torproxy clean $T/nofile >/dev/null
+t_eq "нет файла → код 1" 1 $status
+set -gx MOCK_MAT2_FAIL 1
+torproxy clean "$T/моё фото.jpg" >/dev/null
+t_eq "mat2 не справился → код 1" 1 $status
+set -e MOCK_MAT2_FAIL
+functions -e mat2
+if command -q mat2
+    python3 -c "
+import struct,sys,zlib
+def c(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d))
+open(sys.argv[1],'wb').write(b'\x89PNG\r\n\x1a\n'+c(b'IHDR',struct.pack('>IIBBBBB',1,1,8,0,0,0,0))+c(b'tEXt',b'Author\0SecretName')+c(b'IDAT',zlib.compress(b'\0\0'))+c(b'IEND',b''))" $T/meta.png
+    t_has "исходный файл содержит метаданные" "SecretName" (command mat2 --show $T/meta.png)
+    torproxy clean $T/meta.png >/dev/null
+    t_eq "настоящий mat2 → код 0" 0 $status
+    t_lacks "настоящий mat2 убрал автора" "SecretName" (command mat2 --show $T/meta.cleaned.png)
+else
+    set -l out (torproxy clean $T/meta.png | nocolor)
+    t_has "mat2 не установлен → подсказка" "mat2" $out
+end
+
+# ======================================================================
 section "Терминал без цветов (TERM=dumb)"
 # set_color там ничего не выводит; без кавычек вокруг "$(set_color …)" пропадал весь текст
 printf '%s\n' $orig >$T/dumb.torrc
@@ -429,7 +703,7 @@ set -l out (env TERM=dumb fish -c '
     __torproxy_bar 47; echo
     __torproxy_status --quick
     MOCK_FAIL=journalctl torproxy on' 2>&1)
-t_eq "справка: все 9 команд видны" 9 (string match -r '^\s+torproxy' -- $out | count)
+t_eq "справка: все 14 команд видны" 14 (string match -r '^\s+torproxy' -- $out | count)
 t_has "полоска прогресса видна" "47%" $out
 t_has "статус виден" "Страна выхода" $out
 t_has "сообщение об ошибке видно" "Не удалось прочитать журнал" $out

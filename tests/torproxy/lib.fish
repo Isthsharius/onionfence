@@ -2,6 +2,7 @@
 # Ожидает переменные окружения: T (рабочий каталог теста), SRC (путь к torproxy.fish).
 
 source $SRC
+set -gx XDG_STATE_HOME $T/state # тесты не должны видеть настоящее состояние `torproxy hide`
 # заглушки ниже рассчитаны на раскладку Arch; Debian/Ubuntu проверяются отдельно
 set -g __torproxy_platform arch
 set -g __torproxy_unit tor
@@ -77,6 +78,18 @@ function __mock_tor_alive
     test -f $T/tor.pid; and kill -0 (command cat $T/tor.pid) 2>/dev/null
 end
 
+# Как systemd: ждём, пока Tor завершится. Иначе новый процесс не сможет занять порты
+# старого и упадёт ещё до открытия журнала.
+function __mock_tor_kill
+    __mock_tor_alive; or return 0
+    kill (command cat $T/tor.pid)
+    for i in (seq 100)
+        __mock_tor_alive; or return 0
+        sleep 0.1
+    end
+    kill -9 (command cat $T/tor.pid)
+end
+
 function systemctl
     echo "systemctl $argv" >>$T/calls.log
     set -l alive 0
@@ -98,7 +111,7 @@ function systemctl
         case "restart $__torproxy_unit"
             test "$MOCK_RESTART_FAIL" = 1; and return 1
             if test "$LIVE" = 1
-                __mock_tor_alive; and kill (command cat $T/tor.pid)
+                __mock_tor_kill
                 rm -f $T/tor.log
                 # вывод отвязан, иначе (torproxy on | …) ждёт закрытия канала фоновым Tor
                 tor -f $__torproxy_torrc --quiet </dev/null >/dev/null 2>&1 &
@@ -109,11 +122,17 @@ function systemctl
             end
         case "stop $__torproxy_unit"
             if test "$LIVE" = 1
-                __mock_tor_alive; and kill (command cat $T/tor.pid)
+                __mock_tor_kill
                 rm -f $T/tor.pid
             else
                 echo 0 >$T/tor.state
             end
+        case "-q is-enabled $__torproxy_boot_unit"
+            test -e $T/boot.enabled
+        case "-q is-enabled $__torproxy_unit"
+            test "$MOCK_TOR_ENABLED" = 1
+        case 'enable *'
+            test "$MOCK_ENABLE_FAIL" != 1
         case "reload $__torproxy_unit"
             test "$LIVE" = 1; and kill -HUP (command cat $T/tor.pid)
     end
@@ -152,6 +171,10 @@ end
 if test "$MOCK_NFT" = record
     function nft
         echo "nft $argv" >>$T/calls.log
+        if contains -- -c $argv
+            test "$MOCK_NFT_CHECK_FAIL" != 1
+            return
+        end
         if contains -- -f $argv
             command cat >$T/ruleset.nft
             test "$MOCK_NFT_FAIL" != 1
